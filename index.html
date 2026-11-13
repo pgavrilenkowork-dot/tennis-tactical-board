@@ -85,6 +85,71 @@ function resetPlayers(){
 }
 resetPlayers();
 
+// ---- URL hash: the players' positions and who emits from which end travel in the fragment, so a
+// link restores the whole court.
+//   index.html#p-A2.23:-3.50;B2.00:2.00:R;C2.00:-1.00;D5.01:10.00
+//   "p-" marks a court fragment, then one <letter><x>:<y>[:<side>] per player, metres, 2 decimals.
+//   The optional side is L or R — his OWN left or right, facing the net — and names the end he
+//   emits from; a player without one emits nothing.
+const HASH_TAG = 'p-';
+const fmtCoord = v => (Math.abs(v) < 0.005 ? 0 : v).toFixed(2);   // 2 decimals, and never "-0.00"
+const byLetter = L => players.find(p => p.letter === L);
+// A faces the net with his right hand to screen-left, B with his right hand to screen-right, so
+// fhSide() is exactly his right-hand side; his left is the mirror of it. Nothing lit = no suffix.
+const sideOf = p => p.l === p.r ? '' : ((p.l ? -1 : 1) === fhSide(p) ? 'R' : 'L');
+const entry = q => q.letter + fmtCoord(q.x) + ':' + fmtCoord(q.y) + (q.side ? ':' + q.side : '');
+const canonical = list => HASH_TAG + list.map(entry).join(';');
+const hashOf = () => canonical(players.map(p => ({letter: p.letter, x: p.x, y: p.y, side: sideOf(p)})));
+function readHash(){
+  let raw;
+  try { raw = decodeURIComponent(location.hash.replace(/^#/, '')); } catch (e){ return []; }
+  if (raw.slice(0, HASH_TAG.length).toLowerCase() !== HASH_TAG) return [];   // not ours: leave the court alone
+  const out = [];
+  for (const part of raw.slice(HASH_TAG.length).split(';')){
+    const m = /^\s*([A-Za-z])\s*(-?\d+(?:\.\d+)?)\s*:\s*(-?\d+(?:\.\d+)?)\s*(?::\s*([LRlr])\s*)?$/.exec(part);
+    if (m) out.push({letter: m[1].toUpperCase(), x: +m[2], y: +m[3], side: m[4] ? m[4].toUpperCase() : ''});
+  }                                                                        // junk entries are skipped
+  return out;
+}
+// the positions move; the lit ends come from the fragment alone (no suffix = that player emits
+// nothing), while letters, teams and who is attacking stay as they are
+function applyHash(){
+  const hits = readHash().filter(q => byLetter(q.letter));
+  if (!hits.length) return false;
+  clearBeams();
+  for (const q of hits){
+    const p = byLetter(q.letter);
+    p.x = q.x; p.y = q.y;
+    if (q.side){
+      const ws = q.side === 'R' ? fhSide(p) : -fhSide(p);   // his right / his left as a world-x sign
+      p.l = ws < 0; p.r = ws > 0;
+    }
+  }
+  return true;
+}
+// replaceState keeps the back button clean; file:// may refuse it, so fall back to the fragment itself
+function writeHash(){
+  const h = hashOf();
+  if (location.hash.replace(/^#/, '') === h) return;
+  try { history.replaceState(null, '', '#' + h); }
+  catch (e){ location.replace('#' + h); }
+}
+// one URL write per frame at most, however fast the pointer moves
+let hashQueued = false;
+function scheduleHash(){
+  if (hashQueued) return;
+  hashQueued = true;
+  requestAnimationFrame(() => { hashQueued = false; writeHash(); });
+}
+// a fragment that is pasted or edited re-places the players and re-lights the emitting ends; our
+// own writes are exactly the canonical form of the live state, so they are recognised and ignored
+window.addEventListener('hashchange', () => {
+  if (drag) return;          // mid-drag the pointer owns the position and our own writes are stale
+  const pos = readHash();
+  if (!pos.length || canonical(pos) === hashOf()) return;
+  if (applyHash()) draw();
+});
+
 // reach per side grows linearly from the net value to the baseline value
 // net mode: a defender closer to the net than this (1/4 of net-to-baseline distance)
 const NET_MODE_Y = CL/8;
@@ -295,6 +360,7 @@ cv.addEventListener('pointermove', e => {
   drag.p.x = Math.max(VB.x0, Math.min(VB.x1, w.x+drag.dx));
   drag.p.y = Math.max(VB.y0, Math.min(VB.y1, w.y+drag.dy));
   draw();
+  scheduleHash();                 // keep the URL in step while the player is being moved
 });
 function end(){
   if (!drag) return;
@@ -312,6 +378,7 @@ function end(){
     // DOT / SEG on an attacker: drag only, a tap here never emits
     status();
   }
+  writeHash();               // a drop, or a tap that lights/clears a side, refreshes the URL
   drag = null; cv.classList.remove('drag'); draw();
 }
 cv.addEventListener('pointerup', end);
@@ -346,7 +413,9 @@ function setBarOpen(open){
 }
 barToggle.addEventListener('click', () => setBarOpen(bar.dataset.open !== 'true'));
 setBarOpen(false);      // start minimal; the court gets the whole screen until the bar is tapped
-status(); resize();
+status();
+applyHash();    // a shared #p- link restores the players before the first draw
+resize();
 </script>
 </body>
 </html>
