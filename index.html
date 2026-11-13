@@ -47,6 +47,9 @@ canvas.drag{cursor:grabbing}
     <label>Reach per side (net) <input id="rn" type="range" min="0.5" max="3" step="0.1" value="1"><output id="rnv">1.0 m</output></label>
     <label>Reach per side (baseline) <input id="rb" type="range" min="1" max="8" step="0.1" value="4"><output id="rbv">4.0 m</output></label>
     <label>Narrow reach per side (baseline) <input id="rnn" type="range" min="0.5" max="6" step="0.1" value="2.2"><output id="rnnv">2.2 m</output></label>
+    <label>Show ball <input id="ballOn" type="checkbox"></label>
+    <label>Ball size <input id="ballSize" type="range" min="3" max="40" step="1" value="10"><output id="ballSizev">10 px</output></label>
+    <label>Arrow width <input id="arrowW" type="range" min="2" max="12" step="1" value="4"><output id="arrowWv">4 px</output></label>
   </div>
 </header>
 <main><canvas id="c"></canvas></main>
@@ -69,6 +72,8 @@ const DOT = 'dot';   // lettered placeholder (head dot): drags only, never emits
 const FH  = 'fh';    // forehand end dot: emits from the forehand side
 const BH  = 'bh';    // backhand end dot: emits from the backhand side
 const SEG = 'seg';   // reach line between the two end dots: drags only
+const BALL = 'ball'; // the tennis ball: drags only, never emits
+const VEC = 'vec';   // the ball's arrow: drags (aims / stretches) only, never emits
 // world-x of a player's forehand: facing the net, top team (A) = screen-left, bottom team (B) = screen-right
 const fhSide = p => p.team === 'A' ? -1 : 1;
 let rNet = 1, rBase = 4, rNarrow = 2.2, attack = 'A';
@@ -91,31 +96,58 @@ resetPlayers();
 //   "p-" marks a court fragment, then one <letter><x>:<y>[:<side>] per player, metres, 2 decimals.
 //   The optional side is L or R — his OWN left or right, facing the net — and names the end he
 //   emits from; a player without one emits nothing.
+//   The ball, while it is shown, adds one "b:" entry — its centre and its arrow's tip, metres, 2
+//   decimals — so the arrow travels with the link:
+//     index.html#p-A2.23:-3.50;B2.00:2.00:R;b:0.00:6.50:2.00:3.50
+//   "b:0.00;6.50;2.00;3.50" is accepted too. A tip-less "b:0.00:6.50" places the ball and leaves
+//   the arrow pointing the way it already does; a fragment with no "b:" entry hides the ball. The
+//   arrow's colour follows from the tip — which side of the net it points at, see arrowColor() — so a
+//   link restores that too. The ball's size and arrow width are on-screen settings, not part of the
+//   link.
 const HASH_TAG = 'p-';
+// the ball's entry, wherever it sits in the fragment: "b:" then centre x, y and arrow tip x, y.
+// Both ':' and ';' work between the four numbers, hence the mixed separator class.
+const BALL_RE = /(?:^|;)\s*b\s*:\s*(-?\d+(?:\.\d+)?)\s*[:;]\s*(-?\d+(?:\.\d+)?)\s*(?:[:;]\s*(-?\d+(?:\.\d+)?)\s*[:;]\s*(-?\d+(?:\.\d+)?)\s*)?(?=;|$)/i;
 const fmtCoord = v => (Math.abs(v) < 0.005 ? 0 : v).toFixed(2);   // 2 decimals, and never "-0.00"
 const byLetter = L => players.find(p => p.letter === L);
 // A faces the net with his right hand to screen-left, B with his right hand to screen-right, so
 // fhSide() is exactly his right-hand side; his left is the mirror of it. Nothing lit = no suffix.
 const sideOf = p => p.l === p.r ? '' : ((p.l ? -1 : 1) === fhSide(p) ? 'R' : 'L');
-const entry = q => q.letter + fmtCoord(q.x) + ':' + fmtCoord(q.y) + (q.side ? ':' + q.side : '');
-const canonical = list => HASH_TAG + list.map(entry).join(';');
-const hashOf = () => canonical(players.map(p => ({letter: p.letter, x: p.x, y: p.y, side: sideOf(p)})));
+const entry = q => q.ball
+  ? 'b:' + fmtCoord(q.x) + ':' + fmtCoord(q.y)
+        + (q.hasTip === false ? '' : ':' + fmtCoord(q.x2) + ':' + fmtCoord(q.y2))
+  : q.letter + fmtCoord(q.x) + ':' + fmtCoord(q.y) + (q.side ? ':' + q.side : '');
+// the ball always comes last, so a fragment that puts it first still compares equal after applying
+const canonical = list => HASH_TAG + list.slice()
+  .sort((a, b) => (a.ball ? 1 : 0) - (b.ball ? 1 : 0)).map(entry).join(';');
+const hashOf = () => canonical(players.map(p => ({letter: p.letter, x: p.x, y: p.y, side: sideOf(p)}))
+  .concat(ball.on ? [{ball: true, x: ball.x, y: ball.y, x2: ball.ax, y2: ball.ay}] : []));
 function readHash(){
   let raw;
   try { raw = decodeURIComponent(location.hash.replace(/^#/, '')); } catch (e){ return []; }
   if (raw.slice(0, HASH_TAG.length).toLowerCase() !== HASH_TAG) return [];   // not ours: leave the court alone
+  raw = raw.slice(HASH_TAG.length);
   const out = [];
-  for (const part of raw.slice(HASH_TAG.length).split(';')){
+  const bm = BALL_RE.exec(raw);                    // the ball entry is picked out first, so its "b"
+  if (bm){                                         // can never be read as player B
+    out.push({ball: true, x: +bm[1], y: +bm[2],
+              hasTip: bm[3] != null, x2: bm[3] != null ? +bm[3] : 0, y2: bm[4] != null ? +bm[4] : 0});
+    raw = raw.replace(BALL_RE, ';');               // ...and taken out of the player list
+  }
+  for (const part of raw.split(';')){
     const m = /^\s*([A-Za-z])\s*(-?\d+(?:\.\d+)?)\s*:\s*(-?\d+(?:\.\d+)?)\s*(?::\s*([LRlr])\s*)?$/.exec(part);
     if (m) out.push({letter: m[1].toUpperCase(), x: +m[2], y: +m[3], side: m[4] ? m[4].toUpperCase() : ''});
   }                                                                        // junk entries are skipped
   return out;
 }
 // the positions move; the lit ends come from the fragment alone (no suffix = that player emits
-// nothing), while letters, teams and who is attacking stay as they are
+// nothing), while letters, teams and who is attacking stay as they are. The ball is the fragment's
+// too: a "b:" entry shows it with that arrow, and its absence hides it.
 function applyHash(){
-  const hits = readHash().filter(q => byLetter(q.letter));
-  if (!hits.length) return false;
+  const all = readHash();
+  const hits = all.filter(q => !q.ball && byLetter(q.letter));
+  const b = all.find(q => q.ball);
+  if (!hits.length && !b) return false;
   clearBeams();
   for (const q of hits){
     const p = byLetter(q.letter);
@@ -125,6 +157,16 @@ function applyHash(){
       p.l = ws < 0; p.r = ws > 0;
     }
   }
+  if (b){
+    const dx = b.x - ball.x, dy = b.y - ball.y;             // the arrow rides along with the ball
+    ball.on = true;
+    ball.x = b.x; ball.y = b.y;
+    if (b.hasTip){ ball.ax = b.x2; ball.ay = b.y2; }
+    else { ball.ax += dx; ball.ay += dy; }                  // no tip given: keep direction and length
+  } else {
+    ball.on = false;
+  }
+  syncBallUI();
   return true;
 }
 // replaceState keeps the back button clean; file:// may refuse it, so fall back to the fragment itself
@@ -182,6 +224,240 @@ new ResizeObserver(resize).observe(cv);
 new ResizeObserver(resize).observe(document.querySelector('header'));
 const toPx = p => ({x: ox + p.x*s, y: oy + p.y*s});
 const toWorld = (px,py) => ({x:(px-ox)/s, y:(py-oy)/s});
+
+// ---- the ball's felt colour, in one place: the whole body is one shading ramp derived from this
+//      value, so re-tinting the ball is a one-line edit. '#cfea55' is the optic yellow it ships
+//      with; other ideas: '#d8f24a' (brighter), '#f2e14a' (classic yellow), '#e8703a' (clay).
+//      Any CSS hex ('#rrggbb') or [r, g, b] array works, and opts.color overrides it per call.
+const BALL_COLOR = '#cfea55';
+const BALL_SEAM_COLOR = '#ffffff';            // the seam's lit colour (real balls have white seams)
+
+// ---- overall brightness of the ball: 1 is the plain shading model below, and 1.3 is the punchier
+//      felt tennis_ball.html ships with (its light dim is gentler, worth about 1.3x here). It
+//      multiplies the body ramp and the seam, then clips at 255, so the highlight goes sunny and
+//      the shadow side stays readable. opts.brightness overrides it per call.
+const BALL_BRIGHTNESS = 1.3;
+
+// ---- tennis ball: a self-contained sphere renderer (shaded body + the classic four-lobe seam
+//      band), so the court can show a real tennis ball that the user can drag around.
+//   drawTennisBall(ctx, x, y, radius, opts)
+//     x, y     centre in CSS pixels — the ctx must be in pixel space, not scaled to metres
+//     radius   ball radius in pixels
+//     opts     quat     orientation [w, x, y, z]     (default 0.0698, 0.6742, -0.7349, 0.0210)
+//              az, el   light azimuth / elevation, °  (default -82, 26)
+//              seam     carved seam width, °          (default 4.0)
+//              segments seam resolution               (default 252)
+//              color    felt colour, '#rrggbb' | [r,g,b]  (default BALL_COLOR)
+//              seamColor seam colour, same forms      (default BALL_SEAM_COLOR)
+//              brightness overall brightness multiplier (default BALL_BRIGHTNESS)
+const drawTennisBall = (() => {
+  const D = {quat: [0.0698, 0.6742, -0.7349, 0.0210], az: -82, el: 26, seam: 4.0, segments: 252};
+  // felt ramp: the five shading stops of the body, each the base colour plus an offset — the
+  // highlight lifts it, the three lower bands drain it. Integers, so the default look is exact.
+  const TINT = [[0.00,  26,  14,  55],
+                [0.26,   0,   0,   0],
+                [0.55, -33, -29, -34],
+                [0.80, -73, -69, -56],
+                [1.00,-128,-128, -70]];
+  // '#rrggbb' | 'rgb(r,g,b)' | [r,g,b] -> [r,g,b], or null if it cannot be read
+  const HEX = /^#?([0-9a-f]{6})$/i, RGBA = /^rgba?\(([^)]+)\)$/i;
+  function color(c){
+    if (Array.isArray(c)) return [+c[0]|0, +c[1]|0, +c[2]|0];
+    const s = String(c == null ? '' : c).trim();
+    const h = HEX.exec(s);
+    if (h){ const v = parseInt(h[1], 16); return [v >> 16 & 255, v >> 8 & 255, v & 255]; }
+    const t = RGBA.exec(s);
+    if (t){ const p = t[1].split(',').map(Number); return [p[0]|0, p[1]|0, p[2]|0]; }
+    return null;
+  }
+  const n3 = v => { const m = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0]/m, v[1]/m, v[2]/m]; };
+  const n4 = q => { const m = Math.hypot(q[0], q[1], q[2], q[3]) || 1;
+                    return [q[0]/m, q[1]/m, q[2]/m, q[3]/m]; };
+  const cross = (a, b) => [a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2], a[0]*b[1] - a[1]*b[0]];
+  const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
+  const bite = v => { v = Math.round(v); return v < 0 ? 0 : v > 255 ? 255 : v; };
+  const rgb = (r, g, b) => 'rgb(' + bite(r) + ',' + bite(g) + ',' + bite(b) + ')';
+  // opts.brightness -> a usable multiplier: anything unreadable or <= 0 falls back to the constant
+  const brightOf = b => { const v = +b; return Number.isFinite(v) && v > 0 ? clamp(v, 0, 3) : BALL_BRIGHTNESS; };
+  const rot = q => {                                  // quaternion -> 3x3 matrix, row major
+    const w = q[0], x = q[1], y = q[2], z = q[3];
+    return [1-2*(y*y+z*z), 2*(x*y-w*z),   2*(x*z+w*y),
+            2*(x*y+w*z),   1-2*(x*x+z*z), 2*(y*z-w*x),
+            2*(x*z-w*y),   2*(y*z+w*x),   1-2*(x*x+y*y)];
+  };
+  const turn = (m, p) => [m[0]*p[0] + m[1]*p[1] + m[2]*p[2],
+                          m[3]*p[0] + m[4]*p[1] + m[5]*p[2],
+                          m[6]*p[0] + m[7]*p[1] + m[8]*p[2]];
+  // the seam: four semicircular arcs on the unit sphere, cached per resolution
+  const A = 0.5, Bo = A/3, C = 2*Math.sqrt(A*Bo), U = A + Bo, seams = new Map();
+  function seamPts(n){
+    let pts = seams.get(n);
+    if (pts) return pts;
+    pts = new Array(n);
+    for (let i = 0; i < n; i++){
+      const t = i/n*Math.PI*2;
+      pts[i] = [(A*Math.cos(t) + Bo*Math.cos(3*t))/U, (A*Math.sin(t) - Bo*Math.sin(3*t))/U,
+                C*Math.sin(2*t)/U];
+    }
+    seams.set(n, pts);
+    return pts;
+  }
+  // light direction: azimuth measured from +z toward +x, elevation from the horizontal plane
+  function light(az, el){
+    const a = az*Math.PI/180, e = el*Math.PI/180, ce = Math.cos(e);
+    return [ce*Math.sin(a), Math.sin(e), ce*Math.cos(a)];
+  }
+
+  return function drawTennisBall(ctx, x, y, radius, opts = {}){
+    if (!(radius > 0.01)) return;
+    const M = rot(n4(opts.quat || D.quat));
+    const L = light(opts.az ?? D.az, opts.el ?? D.el);
+    const br = brightOf(opts.brightness);             // overall brightness, on top of the light shading
+    const band = (opts.seam ?? D.seam)*Math.PI/180;    // seam half-width on the sphere (rad)
+    const pts = seamPts(Math.max(16, Math.round(opts.segments ?? D.segments)));
+    const N = pts.length, P = new Array(N), E1 = new Array(N), E2 = new Array(N), vis = new Array(N);
+    for (let i = 0; i < N; i++) P[i] = turn(M, pts[i]);
+    for (let i = 0; i < N; i++){
+      const p = P[i], pa = P[(i + N - 1) % N], pb = P[(i + 1) % N];
+      const tan = n3([pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]]);    // along the seam
+      const bin = n3(cross(p, tan));                                    // across the seam
+      E1[i] = n3([p[0] + band*bin[0], p[1] + band*bin[1], p[2] + band*bin[2]]);
+      E2[i] = n3([p[0] - band*bin[0], p[1] - band*bin[1], p[2] - band*bin[2]]);
+      vis[i] = p[2] > 0;                                                // front hemisphere only
+    }
+    const px = v => [x + v[0]*radius, y - v[1]*radius];
+
+    ctx.save();
+    // body: one radial gradient, centred on the highlight the light direction implies
+    const xy = Math.hypot(L[0], L[1]), bright = Math.max(0, L[2]);
+    const ux = xy > 1e-6 ? L[0]/xy : 0, uy = xy > 1e-6 ? L[1]/xy : 0;
+    const hf = (L[2] >= 0 ? xy*0.85 : 0.85)*radius;
+    const hx = x + ux*hf, hy = y - uy*hf;
+    const k = clamp(0.55 + 0.45*(L[2] + 0.45)/1.13, 0.35, 1)*br;       // dims when backlit, then brightens
+    const g = ctx.createRadialGradient(hx, hy, radius*(0.06 + 0.10*(1 - bright)),
+                                       hx, hy, radius*(1.30 + 0.30*(1 - bright)));
+    const base = color(opts.color) || color(BALL_COLOR) || [207, 234, 85];   // felt colour
+    for (const [pos, r, gg, b] of TINT)      // the whole body ramp, derived from that one colour
+      g.addColorStop(pos, rgb((base[0] + r)*k, (base[1] + gg)*k, (base[2] + b)*k));
+    ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI*2);
+    ctx.fillStyle = g; ctx.fill();
+
+    // seam: one flat-shaded quad per visible segment, lit by the same light
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    const seamCol = color(opts.seamColor) || color(BALL_SEAM_COLOR) || [255, 255, 244];
+    const lw = radius > 30 ? Math.min(1.1, radius*0.02) : 0;            // hides hairlines on big balls
+    if (lw) ctx.lineWidth = lw;
+    for (let i = 0; i < N; i++){
+      const j = (i + 1) % N;
+      if (!vis[i] && !vis[j]) continue;
+      const nx = (P[i][0] + P[j][0])*0.5, ny = (P[i][1] + P[j][1])*0.5, nz = (P[i][2] + P[j][2])*0.5;
+      const nl = Math.hypot(nx, ny, nz) || 1;
+      const lam = Math.max(0, (nx*L[0] + ny*L[1] + nz*L[2])/nl);
+      // lit by the same light, brightened, and capped so the seam tops out at its own colour
+      const t = Math.min(1, (0.42 + 0.58*Math.pow(lam, 0.9))*br);
+      const col = rgb(seamCol[0]*t, seamCol[1]*t, seamCol[2]*t);
+      const a = px(E1[i]), b = px(E2[i]), c = px(E2[j]), d = px(E1[j]);
+      ctx.beginPath();
+      ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c[0], c[1]); ctx.lineTo(d[0], d[1]);
+      ctx.closePath();
+      ctx.fillStyle = col; ctx.fill();
+      if (lw){ ctx.strokeStyle = col; ctx.stroke(); }
+    }
+    ctx.restore();
+  };
+})();
+
+// A tennis ball is 3.43 cm in radius, i.e. about one pixel at the court's normal scale, so its true
+// size is far too small to see: what is drawn is BALL_PX pixels of screen instead (raise BALL_PX,
+// or drag "Ball size" in the header — that writes ball.px — to watch it change). The true radius is
+// still a floor, so the ball only grows past ball.px when you zoom in enough for it to matter.
+// Like a player it is clamped to the visible rectangle, and it is drawn above everything else.
+const BALL_R = 0.0343;                        // true radius of a tennis ball, metres
+const BALL_PX = 10;                            // drawn radius, CSS px  ← the size you actually see
+const ball = {
+  on: false,
+  x: 0, y: 6.5,                               // starts on the centre line, behind the near service line
+  ax: 2.0, ay: 3.5,                           // arrow tip, metres: the arrow always starts at the centre
+  px: BALL_PX,                                // drawn radius, CSS px (the header slider edits this)
+  quat: [0.0698, 0.6742, -0.7349, 0.0210]     // the ball's default orientation
+};
+const ballR = () => Math.max(BALL_R*s, ball.px);
+function drawBall(){
+  if (!ball.on) return;
+  const c = toPx(ball);
+  drawTennisBall(ctx, c.x, c.y, ballR(), {quat: ball.quat});
+}
+
+// ---- the ball's arrow. It always starts at the ball's centre, but the first stretch is never drawn:
+//      a gap radius (always wider than the ball) swallows the tail, so the felt stays clean and the
+//      arrow reads as a direction sticking out of the ball. Drag it and the tip follows the pointer,
+//      so it can be aimed any way and stretched as long as the court allows, down to a minimum.
+const BALL_ARROW_W       = 4;     // shaft width, CSS px  ← the 4 px "Arrow width" setting
+const BALL_ARROW_GAP     = 8;     // clear space kept past the ball's edge, CSS px
+const BALL_ARROW_MIN     = 14;    // shortest VISIBLE arrow, gap edge -> tip, CSS px
+const BALL_ARROW_HEAD_L  = 12;    // head length along the shaft, CSS px
+const BALL_ARROW_HEAD_HW = 6.5;   // head half-width, CSS px
+const BALL_ARROW_COLOR   = '#ffffff';   // the plain arrow colour
+let arrowW = BALL_ARROW_W;        // live shaft width (the header "Arrow width" slider edits this)
+
+// The arrow is the ball's shot direction, so its colour names the side that sent it: aimed up at the
+// top pair (A, B) it wears the bottom pair's colour, aimed down at C, D it wears the top pair's —
+// the ball comes from that side's opponent. It reads the direction as it is DRAWN (pixel space, the
+// same vector arrowGeom() uses), so the colour can never disagree with the arrow you see; within a
+// pixel of level it is aimed at nobody and keeps the plain colour. Read at draw time, so turning the
+// arrow recolours it.
+function arrowColor(){
+  const c = toPx(ball), t = toPx({x: ball.ax, y: ball.ay}), dy = t.y - c.y;
+  if (Math.abs(dy) < 1) return BALL_ARROW_COLOR;
+  return dy < 0 ? COL.B : COL.A;                 // up -> sent by the bottom pair, down -> by the top pair
+}
+
+// The arrow as it is drawn, all in CSS px: ball centre, unit direction (ux, uy), the gap it hides
+// behind, and the tail / tip / head it ends up with. Never shorter than BALL_ARROW_MIN past the gap.
+function arrowGeom(){
+  const c = toPx(ball), gap = ballR() + BALL_ARROW_GAP;
+  const t = toPx({x: ball.ax, y: ball.ay});
+  let dx = t.x - c.x, dy = t.y - c.y, d = Math.hypot(dx, dy);
+  if (d < 1e-6){ dx = 1; dy = 0; d = 1; }                   // degenerate: aim along +x
+  const len  = Math.max(d, gap + BALL_ARROW_MIN);            // minimal length, from the ball's centre
+  const ux = dx/d, uy = dy/d;
+  const head = Math.min(Math.max(BALL_ARROW_HEAD_L, arrowW*1.6), (len - gap)*0.55);   // grows with width,
+  return {c, gap, ux, uy, len, head,                        // never longer than the visible arrow
+          hw: Math.max(arrowW*0.85, BALL_ARROW_HEAD_HW*(head/BALL_ARROW_HEAD_L)),
+          tail: {x: c.x + ux*gap, y: c.y + uy*gap},
+          tip:  {x: c.x + ux*len, y: c.y + uy*len}};
+}
+
+// shaft + filled head, in pixel space above the court. The tail cap is flat ("butt"), so the gap
+// really is empty: the arrow begins exactly gap px past the ball's edge and never covers the ball.
+function drawBallArrow(){
+  if (!ball.on) return;
+  const g = arrowGeom(), col = arrowColor();
+  const bx = g.tip.x - g.ux*g.head, by = g.tip.y - g.uy*g.head;   // centre of the head's base
+  const nx = -g.uy, ny = g.ux;                                    // across the shaft
+  ctx.save();
+  ctx.strokeStyle = col; ctx.fillStyle = col;
+  ctx.lineWidth = arrowW; ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+  line(g.tail.x, g.tail.y, bx, by);
+  ctx.beginPath();
+  ctx.moveTo(g.tip.x, g.tip.y);
+  ctx.lineTo(bx + nx*g.hw, by + ny*g.hw);
+  ctx.lineTo(bx - nx*g.hw, by - ny*g.hw);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+// drag the arrow: the tip follows the pointer, swung around the ball's centre, and never comes closer
+// than the gap plus the minimum length — so it can be aimed any way and stretched without being lost
+function aimArrow(px, py){
+  const c = toPx(ball), min = ballR() + BALL_ARROW_GAP + BALL_ARROW_MIN;
+  let vx = px - c.x, vy = py - c.y, d = Math.hypot(vx, vy);
+  if (d < 1e-6){ vx = ball.ax - ball.x; vy = ball.ay - ball.y; d = Math.hypot(vx, vy) || 1; }
+  const k = Math.max(d, min)/d, w = toWorld(c.x + vx*k, c.y + vy*k);
+  ball.ax = Math.max(VB.x0, Math.min(VB.x1, w.x));
+  ball.ay = Math.max(VB.y0, Math.min(VB.y1, w.y));
+}
+
 
 function line(x1,y1,x2,y2){ ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); }
 
@@ -261,7 +537,7 @@ function drawPlayers(){
     if (!att){ ctx.strokeStyle = col; ctx.lineWidth = 3/s; ctx.stroke(); }
     // player letter (A-D) centred in the dot: dark on a team-coloured attacker, white on a dark defender
     ctx.fillStyle = att ? '#1b2430' : '#fff';
-    ctx.font = '700 ' + (13/s) + 'px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
+    ctx.font = '400 ' + (13/s) + 'px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(p.letter, p.x, p.y + 0.5/s);
   }
@@ -323,11 +599,29 @@ function draw(){
   ctx.clearRect(0,0,cw,ch);
   ctx.translate(ox,oy); ctx.scale(s,s);
   drawCourt(); drawBeams(); drawNet(); drawPlayers(); drawDragGuide();
+  ctx.setTransform(dpr,0,0,dpr,0,0);   // back to pixels: the ball keeps a readable size and sits on top
+  drawBallArrow(); drawBall();
 }
 
 // ---- interaction (mouse + touch via pointer events)
 let drag = null;
+// distance from a point to a segment, so the arrow can be grabbed anywhere along its drawn length
+function segDist(px, py, ax, ay, bx, by){
+  const vx = bx - ax, vy = by - ay, L = vx*vx + vy*vy;
+  const t = L > 1e-6 ? Math.max(0, Math.min(1, ((px-ax)*vx + (py-ay)*vy)/L)) : 0;
+  return Math.hypot(px - (ax + vx*t), py - (ay + vy*t));
+}
 function pick(px,py){
+  // the ball is drawn above everything, so it also wins the pick; a generous pad keeps it grabbable
+  if (ball.on){
+    const c = toPx(ball);
+    if (Math.hypot(px - c.x, py - c.y) <= ballR() + 6) return {p: ball, part: BALL};
+    // then the arrow (drawn above the players, and only where it is actually visible): grab its
+    // shaft or its head, never the empty gap behind them
+    const g = arrowGeom();
+    if (segDist(px, py, g.tail.x, g.tail.y, g.tip.x, g.tip.y) <= Math.max(7, arrowW/2 + 5))
+      return {p: ball, part: VEC};
+  }
   let best = null, bd = 1e9;
   for (const p of players){
     const r = reachOf(p), fh = fhSide(p);
@@ -356,16 +650,24 @@ cv.addEventListener('pointermove', e => {
   if (!drag) return;
   const r = cv.getBoundingClientRect(), px = e.clientX-r.left, py = e.clientY-r.top;
   if (Math.hypot(px-drag.sx,py-drag.sy) > 6) drag.moved = true;
-  const w = toWorld(px,py);
-  drag.p.x = Math.max(VB.x0, Math.min(VB.x1, w.x+drag.dx));
-  drag.p.y = Math.max(VB.y0, Math.min(VB.y1, w.y+drag.dy));
+  if (drag.part === VEC){
+    aimArrow(px, py);             // the tip follows the pointer, swung around the ball's centre
+  } else {
+    const w = toWorld(px,py);
+    const x = Math.max(VB.x0, Math.min(VB.x1, w.x+drag.dx));
+    const y = Math.max(VB.y0, Math.min(VB.y1, w.y+drag.dy));
+    if (drag.part === BALL){      // the arrow travels with its ball, keeping direction and length
+      ball.ax += x - ball.x; ball.ay += y - ball.y;
+    }
+    drag.p.x = x; drag.p.y = y;
+  }
   draw();
   scheduleHash();                 // keep the URL in step while the player is being moved
 });
 function end(){
   if (!drag) return;
-  if (!drag.moved){
-    const p = drag.p;
+  if (!drag.moved && drag.part !== BALL && drag.part !== VEC){   // the ball and its arrow only ever
+    const p = drag.p;                                          // move: a tap on either does nothing
     if (p.team !== attack){
       if (drag.part === DOT) swapRoles();     // placeholder tap: the defender attacks (no beam lit)
     } else if (drag.part === FH || drag.part === BH){
@@ -404,6 +706,43 @@ function bindReach(id, out, set){
 bindReach('rn', 'rnv', v => rNet = v);
 bindReach('rb', 'rbv', v => rBase = v);
 bindReach('rnn', 'rnnv', v => rNarrow = v);
+// ---- ball checkbox: show / hide the tennis ball; once shown it drags like a player does, and its
+// arrow comes with it. The URL carries the ball, so toggling rewrites the fragment as well.
+const ballOn = document.getElementById('ballOn');
+ballOn.addEventListener('change', () => {
+  ball.on = ballOn.checked;
+  writeHash();                  // "b:" appears while the ball is shown, and goes when it is hidden
+  draw();
+});
+// ---- ball size slider: writes ball.px, the ball's drawn radius in CSS px (BALL_PX is its default).
+// Its initial position follows ball.px, so editing the constant in the code is enough. Touching the
+// slider also shows the ball, so the size change is visible straight away.
+const ballSize = document.getElementById('ballSize'), ballSizev = document.getElementById('ballSizev');
+ballSize.value = ball.px;
+ballSizev.textContent = ball.px + ' px';
+ballSize.addEventListener('input', () => {
+  ball.px = +ballSize.value;
+  ballSizev.textContent = ball.px + ' px';
+  if (!ball.on){ ball.on = true; ballOn.checked = true; writeHash(); }
+  draw();
+});
+// ---- arrow width slider: writes arrowW, the shaft width in CSS px (BALL_ARROW_W is its default).
+// Same rules as the size slider: it starts from the constant and shows the ball so you can see it.
+const arrowWidth = document.getElementById('arrowW'), arrowWidthv = document.getElementById('arrowWv');
+arrowWidth.value = arrowW;
+arrowWidthv.textContent = arrowW + ' px';
+arrowWidth.addEventListener('input', () => {
+  arrowW = +arrowWidth.value;
+  arrowWidthv.textContent = arrowW + ' px';
+  if (!ball.on){ ball.on = true; ballOn.checked = true; writeHash(); }
+  draw();
+});
+// a #p- link can show or hide the ball, so the header always mirrors the live ball state
+function syncBallUI(){
+  ballOn.checked = ball.on;
+  ballSize.value = ball.px; ballSizev.textContent = ball.px + ' px';
+  arrowWidth.value = arrowW; arrowWidthv.textContent = arrowW + ' px';
+}
 // ---- header: on narrow screens it is just a "Settings" bar (see the max-width media query);
 // tapping it toggles the full panel. Wide screens always show the panel and hide the bar.
 const bar = document.querySelector('header'), barToggle = document.getElementById('barToggle');
