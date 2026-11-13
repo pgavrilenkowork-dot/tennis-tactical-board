@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Doubles court: net player shadow</title>
+<style>
+:root{--bg:#eef1f4;--bar:#ffffff;--ink:#1b2430;--muted:#5b6776;--line:#d3d9e0;
+  box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f141b;--bar:#18202a;--ink:#e8edf3;--muted:#98a4b3;--line:#2b3644}}
+:root[data-theme="dark"]{--bg:#0f141b;--bar:#18202a;--ink:#e8edf3;--muted:#98a4b3;--line:#2b3644}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden;overscroll-behavior:none}
+header{position:fixed;top:env(safe-area-inset-top,0px);left:0;right:0;z-index:2;display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center;padding:10px 14px;background:var(--bar);border-bottom:1px solid var(--line)}
+#status{flex:1 1 100%}
+label{display:flex;align-items:center;gap:8px;color:var(--muted)}
+output{min-width:3em;color:var(--ink)}
+input[type=range]{width:120px}
+button{font:inherit;color:var(--ink);background:transparent;border:1px solid var(--line);border-radius:6px;padding:5px 12px;cursor:pointer}
+button:focus-visible,input:focus-visible{outline:2px solid #2e6fd0;outline-offset:2px}
+canvas{position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;touch-action:none;cursor:grab;display:block}
+canvas.drag{cursor:grabbing}
+</style>
+</head>
+<body>
+<header>
+  <div id="status"></div>
+  <label>Reach per side (net) <input id="rn" type="range" min="0.5" max="3" step="0.1" value="1"><output id="rnv">1.0 m</output></label>
+  <label>Reach per side (baseline) <input id="rb" type="range" min="1" max="8" step="0.1" value="4"><output id="rbv">4.0 m</output></label>
+  <label>Narrow reach per side (baseline) <input id="rnn" type="range" min="0.5" max="6" step="0.1" value="2.2"><output id="rnnv">2.2 m</output></label>
+  <button id="swap" type="button">Swap roles</button>
+  <button id="reset" type="button">Reset players</button>
+</header>
+<main><canvas id="c"></canvas></main>
+<script>
+// Real court dimensions in metres (doubles)
+const CW = 10.97, CL = 23.77, SINGLES = 8.23, SERVICE = 6.40, POST = CW/2 + 0.914;
+const MX = 2.5, MY = 3;
+let VB = {x0:-10,y0:-15,x1:10,y1:15};     // visible world rectangle; origin = centre of net, y down
+const COL = { A: '#ffb020', B: '#ff5fa2' };
+const NAME = { A: 'Top team', B: 'Bottom team' };
+const HEAD_PX = 11;
+const SHADOW_COL = "#000";
+let rNet = 1, rBase = 4, rNarrow = 2.2, attack = 'A';
+let players = [];
+function resetPlayers(){
+  // Default: top team attacks; one player emits, forehand side only (right-handed: facing the net,
+  // the top team's forehand is the screen-left end, the bottom team's is the screen-right end).
+  players = [
+    {team:'A', x:-2.9, y:-2.3, l:false, r:false}, {team:'A', x: 5.6, y:-12.9, l:true,  r:false},
+    {team:'B', x:-3.2, y: 12.5, l:false, r:false}, {team:'B', x: 4.1, y: 2.2, l:false, r:true}
+  ];
+  attack = 'A';
+}
+resetPlayers();
+
+// reach per side grows linearly from the net value to the baseline value
+// net mode: a defender closer to the net than this (1/4 of net-to-baseline distance)
+const NET_MODE_Y = CL/8;
+const inNetMode = q => Math.abs(q.y) < NET_MODE_Y;
+function reachAt(y){
+  // fixed net value in net mode, then linear up to the baseline value
+  const t = Math.max(0, Math.min(1, (Math.abs(y) - NET_MODE_Y) / (CL/2 - NET_MODE_Y)));
+  return rNet + (rBase - rNet) * t;
+}
+
+// an attacker always has a fixed 2 m total reach (1 m per side), wherever he stands
+const ATTACK_REACH = 1;
+const reachOf = p => p.team === attack ? ATTACK_REACH : reachAt(p.y);
+
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let cw = 0, ch = 0, dpr = 1, s = 1, ox = 0, oy = 0;
+function resize(){
+  const r = cv.getBoundingClientRect();
+  dpr = window.devicePixelRatio || 1;
+  cw = r.width; ch = r.height;
+  cv.width = Math.round(cw*dpr); cv.height = Math.round(ch*dpr);
+  const top = document.querySelector('header').getBoundingClientRect().bottom + 6;
+  const availH = Math.max(100, ch - top);
+  s = Math.min(cw/(CW+2*MX), availH/(CL+2*MY));
+  ox = cw/2; oy = top + availH/2;
+  VB = {x0:-ox/s, y0:-oy/s, x1:(cw-ox)/s, y1:(ch-oy)/s};
+  draw();
+}
+new ResizeObserver(resize).observe(cv);
+new ResizeObserver(resize).observe(document.querySelector('header'));
+const toPx = p => ({x: ox + p.x*s, y: oy + p.y*s});
+const toWorld = (px,py) => ({x:(px-ox)/s, y:(py-oy)/s});
+
+function line(x1,y1,x2,y2){ ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); }
+
+function drawCourt(){
+  ctx.fillStyle = '#2f8a4e'; ctx.fillRect(VB.x0,VB.y0,VB.x1-VB.x0,VB.y1-VB.y0);
+  ctx.fillStyle = '#2e6fd0'; ctx.fillRect(-CW/2,-CL/2,CW,CL);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(0.06, 1.5/s); ctx.lineCap = 'butt';
+  ctx.strokeRect(-CW/2,-CL/2,CW,CL);
+  line(-SINGLES/2,-CL/2,-SINGLES/2,CL/2); line(SINGLES/2,-CL/2,SINGLES/2,CL/2);
+  line(-SINGLES/2,-SERVICE,SINGLES/2,-SERVICE); line(-SINGLES/2,SERVICE,SINGLES/2,SERVICE);
+  line(0,-SERVICE,0,SERVICE);
+  line(0,-CL/2,0,-CL/2+0.1); line(0,CL/2,0,CL/2-0.1);
+}
+
+function drawNet(){
+  ctx.strokeStyle = '#f2f4f7'; ctx.lineWidth = Math.max(0.1, 2.5/s);
+  line(-POST,0,POST,0);
+  ctx.fillStyle = '#f2f4f7';
+  for (const x of [-POST, POST]){ ctx.beginPath(); ctx.arc(x,0,0.16,0,7); ctx.fill(); }
+}
+
+// Every active source of an attacker shines at BOTH defenders.
+function drawBeams(){
+  const T = 400;
+  const kN = rNarrow / rBase;   // narrow (fast ball) reach = wide reach scaled to rNarrow at the baseline
+  ctx.save();
+  ctx.beginPath(); ctx.rect(VB.x0,VB.y0,VB.x1-VB.x0,VB.y1-VB.y0); ctx.clip();
+  const defenders = players.filter(q => q.team !== attack);
+  for (const p of players.filter(q => q.team === attack)){
+    const col = COL[p.team], rp = ATTACK_REACH;
+    for (const sx of [-1, 1]){
+      if (!(sx < 0 ? p.l : p.r)) continue;
+      const S = {x: p.x + sx*rp, y: p.y};
+      for (const q of defenders){
+        for (const wide of (inNetMode(q) ? [false] : [true, false])){   // net mode: one dark beam only
+          const rq = reachAt(q.y) * (wide || inNetMode(q) ? 1 : kN);
+          const A = {x: q.x - rq, y: q.y}, B = {x: q.x + rq, y: q.y};
+          const dA = {x: A.x-S.x, y: A.y-S.y}, dB = {x: B.x-S.x, y: B.y-S.y};
+          if (Math.hypot(dA.x,dA.y) < 1e-6 || Math.hypot(dB.x,dB.y) < 1e-6) continue;
+          // lit part: source to defender
+          ctx.globalAlpha = 0.22; ctx.fillStyle = SHADOW_COL; //col;
+          ctx.beginPath(); ctx.moveTo(S.x,S.y); ctx.lineTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.closePath(); ctx.fill();
+          // shadow behind defender
+          ctx.globalAlpha = wide ? 0.15 : 0.3; ctx.fillStyle = SHADOW_COL;
+          ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y);
+          ctx.lineTo(B.x+dB.x*T,B.y+dB.y*T); ctx.lineTo(A.x+dA.x*T,A.y+dA.y*T); ctx.closePath(); ctx.fill();
+        }
+      }
+    }
+  }
+  ctx.restore();
+}
+
+function drawPlayers(){
+  for (const p of players){
+    const col = COL[p.team], att = p.team === attack, r = reachOf(p);
+    ctx.strokeStyle = col; ctx.lineCap = 'round';
+    ctx.lineWidth = 3.5/s;
+    // a defender outside net mode: half-transparent line over the whole (wide, lighter-shadow) reach,
+    // opaque over the narrow (guaranteed, darker-shadow) reach
+    if (!att && inNetMode(p)) ctx.setLineDash([9/s, 7/s]);
+    const twoZones = !att && !inNetMode(p);
+    if (twoZones) ctx.globalAlpha = 0.5;
+    line(p.x-r,p.y,p.x+r,p.y);
+    ctx.globalAlpha = 1; ctx.setLineDash([]);
+    if (twoZones){ const rn = r * rNarrow / rBase; line(p.x-rn,p.y,p.x+rn,p.y); }
+    for (const sx of [-r, r]){
+      const on = att && (sx < 0 ? p.l : p.r);
+      ctx.beginPath(); ctx.arc(p.x+sx,p.y,(att ? 7 : 4)/s,0,7);
+      ctx.fillStyle = on ? col : '#1b2430'; ctx.fill();
+      ctx.lineWidth = 2/s; ctx.strokeStyle = on ? '#fff' : col; ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(p.x,p.y,(HEAD_PX+2)/s,0,7);
+    ctx.fillStyle = '#fff'; ctx.fill();
+    ctx.beginPath(); ctx.arc(p.x,p.y,HEAD_PX/s,0,7);
+    ctx.fillStyle = att ? col : '#1b2430'; ctx.fill();
+    if (!att){ ctx.strokeStyle = col; ctx.lineWidth = 3/s; ctx.stroke(); }
+  }
+}
+
+function draw(){
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,cw,ch);
+  ctx.translate(ox,oy); ctx.scale(s,s);
+  drawCourt(); drawBeams(); drawNet(); drawPlayers();
+}
+
+// ---- interaction (mouse + touch via pointer events)
+let drag = null;
+function pick(px,py){
+  let best = null, bd = 1e9;
+  for (const p of players){
+    const r = reachOf(p);
+    const c = toPx(p), d = Math.hypot(px-c.x, py-c.y);
+    const a = toPx({x:p.x-r,y:p.y}), b = toPx({x:p.x+r,y:p.y});
+    const att = p.team === attack;
+    const dl = att ? Math.hypot(px-a.x, py-a.y) : 1e9, dr = att ? Math.hypot(px-b.x, py-b.y) : 1e9;
+    const dSeg = Math.abs(py-c.y) <= 16 && px >= a.x-12 && px <= b.x+12 ? Math.abs(py-c.y) + 16 : 1e9;
+    const cands = [[d <= HEAD_PX+8 ? d : 1e9, 'head'], [dl <= 18 ? dl : 1e9, 'L'], [dr <= 18 ? dr : 1e9, 'R'], [dSeg, 'seg']];
+    const [score, part] = cands.reduce((m, c2) => c2[0] < m[0] ? c2 : m);
+    if (score < bd && score < 1e8){ bd = score; best = {p, part}; }
+  }
+  return best;
+}
+cv.addEventListener('pointerdown', e => {
+  const r = cv.getBoundingClientRect(), px = e.clientX-r.left, py = e.clientY-r.top;
+  const hit = pick(px,py); if (!hit) return;
+  const w = toWorld(px,py);
+  drag = {p: hit.p, part: hit.part, dx: hit.p.x-w.x, dy: hit.p.y-w.y, sx: px, sy: py, moved: false};
+  cv.setPointerCapture(e.pointerId); cv.classList.add('drag'); e.preventDefault();
+});
+cv.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const r = cv.getBoundingClientRect(), px = e.clientX-r.left, py = e.clientY-r.top;
+  if (Math.hypot(px-drag.sx,py-drag.sy) > 6) drag.moved = true;
+  const w = toWorld(px,py);
+  drag.p.x = Math.max(VB.x0, Math.min(VB.x1, w.x+drag.dx));
+  drag.p.y = Math.max(VB.y0, Math.min(VB.y1, w.y+drag.dy));
+  draw();
+});
+function end(){
+  if (!drag) return;
+      console.log(players);
+  if (!drag.moved){
+    const p = drag.p;
+    if (p.team !== attack){
+      if (drag.part === 'head') swapRoles();            // tap a defender's dot: it attacks now
+    } else if (drag.part === 'L'){ const on = !p.l; clearBeams(); p.l = on; }   // one side of one player at a time
+    else if (drag.part === 'R'){ const on = !p.r; clearBeams(); p.r = on; }
+    else if (drag.part === 'head'){   // dot: beams off, or back to the forehand side
+      const any = p.l || p.r; clearBeams();
+      if (!any){ if (p.team === 'A') p.l = true; else p.r = true; }
+    }
+    status();
+  }
+  drag = null; cv.classList.remove('drag'); draw();
+}
+cv.addEventListener('pointerup', end);
+cv.addEventListener('pointercancel', end);
+
+// ---- controls
+function clearBeams(){ for (const q of players) q.l = q.r = false; }
+// after a swap the new attackers start with one forehand beam, like the default
+function swapRoles(){
+  attack = attack === 'A' ? 'B' : 'A';
+  clearBeams();
+  if (attack === 'A') players[1].l = true; else players[3].r = true;
+}
+function status(){
+  const def = attack === 'A' ? 'B' : 'A';
+  document.getElementById('status').textContent =
+    NAME[attack] + ' attacks (beams), ' + NAME[def].toLowerCase() + ' defends (shadows). Tap an attacker’s segment end to emit from that side only (tap again to stop), or a defender’s dot to swap roles.';
+}
+function bindReach(id, out, set){
+  document.getElementById(id).addEventListener('input', e => {
+    set(+e.target.value); document.getElementById(out).textContent = (+e.target.value).toFixed(1) + ' m'; draw();
+  });
+}
+bindReach('rn', 'rnv', v => rNet = v);
+bindReach('rb', 'rbv', v => rBase = v);
+bindReach('rnn', 'rnnv', v => rNarrow = v);
+document.getElementById('swap').addEventListener('click', () => { swapRoles(); status(); draw(); });
+document.getElementById('reset').addEventListener('click', () => { resetPlayers(); status(); draw(); });
+status(); resize();
+</script>
+</body>
+</html>
