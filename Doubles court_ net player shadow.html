@@ -42,14 +42,22 @@ const COL = { A: '#ffb020', B: '#ff5fa2' };
 const NAME = { A: 'Top team', B: 'Bottom team' };
 const HEAD_PX = 11;
 const SHADOW_COL = "#000";
+// Short names for a player's clickable objects, shared by pick() and end()
+const DOT = 'dot';   // lettered placeholder (head dot): drags only, never emits
+const FH  = 'fh';    // forehand end dot: emits from the forehand side
+const BH  = 'bh';    // backhand end dot: emits from the backhand side
+const SEG = 'seg';   // reach line between the two end dots: drags only
+// world-x of a player's forehand: facing the net, top team (A) = screen-left, bottom team (B) = screen-right
+const fhSide = p => p.team === 'A' ? -1 : 1;
 let rNet = 1, rBase = 4, rNarrow = 2.2, attack = 'A';
 let players = [];
 function resetPlayers(){
   // Default: top team attacks; one player emits, forehand side only (right-handed: facing the net,
   // the top team's forehand is the screen-left end, the bottom team's is the screen-right end).
+  // Each player keeps a fixed letter (top team A, B / bottom team C, D) drawn in his dot.
   players = [
-    {team:'A', x:-2.9, y:-2.3, l:false, r:false}, {team:'A', x: 5.6, y:-12.9, l:true,  r:false},
-    {team:'B', x:-3.2, y: 12.5, l:false, r:false}, {team:'B', x: 4.1, y: 2.2, l:false, r:true}
+    {letter:'A', team:'A', x:-2.9, y:-2.3, l:false, r:false}, {letter:'B', team:'A', x: 5.6, y:-12.9, l:true,  r:false},
+    {letter:'C', team:'B', x:-3.2, y: 12.5, l:false, r:false}, {letter:'D', team:'B', x: 4.1, y: 2.2, l:false, r:true}
   ];
   attack = 'A';
 }
@@ -164,6 +172,11 @@ function drawPlayers(){
     ctx.beginPath(); ctx.arc(p.x,p.y,HEAD_PX/s,0,7);
     ctx.fillStyle = att ? col : '#1b2430'; ctx.fill();
     if (!att){ ctx.strokeStyle = col; ctx.lineWidth = 3/s; ctx.stroke(); }
+    // player letter (A-D) centred in the dot: dark on a team-coloured attacker, white on a dark defender
+    ctx.fillStyle = att ? '#1b2430' : '#fff';
+    ctx.font = '700 ' + (13/s) + 'px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(p.letter, p.x, p.y + 0.5/s);
   }
 }
 
@@ -179,13 +192,15 @@ let drag = null;
 function pick(px,py){
   let best = null, bd = 1e9;
   for (const p of players){
-    const r = reachOf(p);
+    const r = reachOf(p), fh = fhSide(p);
     const c = toPx(p), d = Math.hypot(px-c.x, py-c.y);
     const a = toPx({x:p.x-r,y:p.y}), b = toPx({x:p.x+r,y:p.y});
+    const fhDot = fh < 0 ? a : b, bhDot = fh < 0 ? b : a;
     const att = p.team === attack;
-    const dl = att ? Math.hypot(px-a.x, py-a.y) : 1e9, dr = att ? Math.hypot(px-b.x, py-b.y) : 1e9;
+    const dFh = att ? Math.hypot(px-fhDot.x, py-fhDot.y) : 1e9;
+    const dBh = att ? Math.hypot(px-bhDot.x, py-bhDot.y) : 1e9;
     const dSeg = Math.abs(py-c.y) <= 16 && px >= a.x-12 && px <= b.x+12 ? Math.abs(py-c.y) + 16 : 1e9;
-    const cands = [[d <= HEAD_PX+8 ? d : 1e9, 'head'], [dl <= 18 ? dl : 1e9, 'L'], [dr <= 18 ? dr : 1e9, 'R'], [dSeg, 'seg']];
+    const cands = [[d <= HEAD_PX+8 ? d : 1e9, DOT], [dFh <= 18 ? dFh : 1e9, FH], [dBh <= 18 ? dBh : 1e9, BH], [dSeg, SEG]];
     const [score, part] = cands.reduce((m, c2) => c2[0] < m[0] ? c2 : m);
     if (score < bd && score < 1e8){ bd = score; best = {p, part}; }
   }
@@ -209,17 +224,18 @@ cv.addEventListener('pointermove', e => {
 });
 function end(){
   if (!drag) return;
-      console.log(players);
   if (!drag.moved){
     const p = drag.p;
     if (p.team !== attack){
-      if (drag.part === 'head') swapRoles();            // tap a defender's dot: it attacks now
-    } else if (drag.part === 'L'){ const on = !p.l; clearBeams(); p.l = on; }   // one side of one player at a time
-    else if (drag.part === 'R'){ const on = !p.r; clearBeams(); p.r = on; }
-    else if (drag.part === 'head'){   // dot: beams off, or back to the forehand side
-      const any = p.l || p.r; clearBeams();
-      if (!any){ if (p.team === 'A') p.l = true; else p.r = true; }
+      if (drag.part === DOT) swapRoles();     // placeholder tap: the defender attacks (no beam lit)
+    } else if (drag.part === FH || drag.part === BH){
+      // beams are emitted ONLY from the forehand/backhand dots: one side of one player at a time
+      const side = drag.part === FH ? fhSide(p) : -fhSide(p);   // -1 = screen-left, +1 = screen-right
+      const on = side < 0 ? !p.l : !p.r;
+      clearBeams();
+      if (side < 0) p.l = on; else p.r = on;
     }
+    // DOT / SEG on an attacker: drag only, a tap here never emits
     status();
   }
   drag = null; cv.classList.remove('drag'); draw();
@@ -229,16 +245,15 @@ cv.addEventListener('pointercancel', end);
 
 // ---- controls
 function clearBeams(){ for (const q of players) q.l = q.r = false; }
-// after a swap the new attackers start with one forehand beam, like the default
+// roles swap with all beams off: a beam is only ever lit by tapping a forehand/backhand dot
 function swapRoles(){
   attack = attack === 'A' ? 'B' : 'A';
   clearBeams();
-  if (attack === 'A') players[1].l = true; else players[3].r = true;
 }
 function status(){
   const def = attack === 'A' ? 'B' : 'A';
   document.getElementById('status').textContent =
-    NAME[attack] + ' attacks (beams), ' + NAME[def].toLowerCase() + ' defends (shadows). Tap an attacker’s segment end to emit from that side only (tap again to stop), or a defender’s dot to swap roles.';
+    NAME[attack] + ' attacks (beams), ' + NAME[def].toLowerCase() + ' defends (shadows). Tap an attacker’s forehand (FH) or backhand (BH) dot to emit from that side only (tap again to stop) — the lettered placeholder never emits; tap a defender’s placeholder to swap roles.';
 }
 function bindReach(id, out, set){
   document.getElementById(id).addEventListener('input', e => {
