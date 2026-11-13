@@ -517,12 +517,12 @@ function drawPlayers(){
     ctx.strokeStyle = col; ctx.lineCap = 'round';
     ctx.lineWidth = 3.5/s;
     // a defender outside net mode: half-transparent line over the whole (wide, lighter-shadow) reach,
-    // opaque over the narrow (guaranteed, darker-shadow) reach
-    if (!att && inNetMode(p)) ctx.setLineDash([9/s, 7/s]);
+    // opaque over the narrow (guaranteed, darker-shadow) reach. In net mode the reach is a single dark
+    // zone, so the line is drawn solid all the way — same as an attacker's, no dashes.
     const twoZones = !att && !inNetMode(p);
     if (twoZones) ctx.globalAlpha = 0.5;
     line(p.x-r,p.y,p.x+r,p.y);
-    ctx.globalAlpha = 1; ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
     if (twoZones){ const rn = r * rNarrow / rBase; line(p.x-rn,p.y,p.x+rn,p.y); }
     for (const sx of [-r, r]){
       const on = att && (sx < 0 ? p.l : p.r);
@@ -530,14 +530,19 @@ function drawPlayers(){
       ctx.fillStyle = on ? col : '#1b2430'; ctx.fill();
       ctx.lineWidth = 2/s; ctx.strokeStyle = on ? '#fff' : col; ctx.stroke();
     }
-    ctx.beginPath(); ctx.arc(p.x,p.y,(HEAD_PX+2)/s,0,7);
-    ctx.fillStyle = '#fff'; ctx.fill();
+    // white rim only on an attacker's team-coloured dot; a defender's dark dot sits straight on the
+    // court inside its team-coloured ring (no white halo)
+    if (att){
+      ctx.beginPath(); ctx.arc(p.x,p.y,(HEAD_PX+2)/s,0,7);
+      ctx.fillStyle = '#fff'; ctx.fill();
+    }
     ctx.beginPath(); ctx.arc(p.x,p.y,HEAD_PX/s,0,7);
     ctx.fillStyle = att ? col : '#1b2430'; ctx.fill();
     if (!att){ ctx.strokeStyle = col; ctx.lineWidth = 3/s; ctx.stroke(); }
-    // player letter (A-D) centred in the dot: dark on a team-coloured attacker, white on a dark defender
+    // player letter (A-D) centred in the dot: bold while he is attacking, regular while defending;
+    // dark on a team-coloured attacker, white on a dark defender
     ctx.fillStyle = att ? '#1b2430' : '#fff';
-    ctx.font = '400 ' + (13/s) + 'px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
+    ctx.font = (att ? '700 ' : '400 ') + (13/s) + 'px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(p.letter, p.x, p.y + 0.5/s);
   }
