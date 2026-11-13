@@ -12,25 +12,42 @@
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
 body{background:var(--bg);color:var(--ink);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden;overscroll-behavior:none}
-header{position:fixed;top:env(safe-area-inset-top,0px);left:0;right:0;z-index:2;display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center;padding:10px 14px;background:var(--bar);border-bottom:1px solid var(--line)}
+header{position:fixed;top:env(safe-area-inset-top,0px);left:0;right:0;z-index:2;display:flex;flex-direction:column;padding:10px 14px;background:var(--bar);border-bottom:1px solid var(--line)}
+#barToggle{display:none}
+#settings{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center}
 #status{flex:1 1 100%}
 label{display:flex;align-items:center;gap:8px;color:var(--muted)}
 output{min-width:3em;color:var(--ink)}
 input[type=range]{width:120px}
-button{font:inherit;color:var(--ink);background:transparent;border:1px solid var(--line);border-radius:6px;padding:5px 12px;cursor:pointer}
 button:focus-visible,input:focus-visible{outline:2px solid #2e6fd0;outline-offset:2px}
 canvas{position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;touch-action:none;cursor:grab;display:block}
 canvas.drag{cursor:grabbing}
+/* Narrow screens: the header shrinks to a single tap-to-expand bar; tapping it reveals every setting.
+   Wide screens keep the full header, since #barToggle stays hidden and #settings is always shown. */
+@media (max-width:700px){
+  header{padding:8px 12px}
+  #barToggle{display:flex;width:100%;align-items:center;justify-content:space-between;gap:12px;
+    font:inherit;font-weight:600;color:var(--ink);background:transparent;border:0;border-radius:6px;
+    padding:4px 0;cursor:pointer;text-align:left}
+  #barToggle .chev{display:inline-block;font-size:11px;line-height:1;color:var(--muted);transition:transform .18s ease}
+  header[data-open="true"] #barToggle .chev{transform:rotate(180deg)}
+  #settings{display:none}
+  header[data-open="true"] #settings{display:flex;margin-top:10px;
+    max-height:calc(100vh - 104px);max-height:calc(100dvh - 104px);overflow:auto;overscroll-behavior:contain}
+  label{flex:1 1 100%;justify-content:space-between}
+  input[type=range]{flex:1 1 auto;width:auto;min-width:80px}
+}
 </style>
 </head>
 <body>
 <header>
-  <div id="status"></div>
-  <label>Reach per side (net) <input id="rn" type="range" min="0.5" max="3" step="0.1" value="1"><output id="rnv">1.0 m</output></label>
-  <label>Reach per side (baseline) <input id="rb" type="range" min="1" max="8" step="0.1" value="4"><output id="rbv">4.0 m</output></label>
-  <label>Narrow reach per side (baseline) <input id="rnn" type="range" min="0.5" max="6" step="0.1" value="2.2"><output id="rnnv">2.2 m</output></label>
-  <button id="swap" type="button">Swap roles</button>
-  <button id="reset" type="button">Reset players</button>
+  <button id="barToggle" type="button" aria-expanded="false" aria-controls="settings">Settings<span class="chev" aria-hidden="true">▾</span></button>
+  <div id="settings">
+    <div id="status"></div>
+    <label>Reach per side (net) <input id="rn" type="range" min="0.5" max="3" step="0.1" value="1"><output id="rnv">1.0 m</output></label>
+    <label>Reach per side (baseline) <input id="rb" type="range" min="1" max="8" step="0.1" value="4"><output id="rbv">4.0 m</output></label>
+    <label>Narrow reach per side (baseline) <input id="rnn" type="range" min="0.5" max="6" step="0.1" value="2.2"><output id="rnnv">2.2 m</output></label>
+  </div>
 </header>
 <main><canvas id="c"></canvas></main>
 <script>
@@ -41,6 +58,11 @@ let VB = {x0:-10,y0:-15,x1:10,y1:15};     // visible world rectangle; origin = c
 const COL = { A: '#ffb020', B: '#ff5fa2' };
 const NAME = { A: 'Top team', B: 'Bottom team' };
 const HEAD_PX = 11;
+const DOT_GAP = 12;   // GUIDE LINE: clear space (px) kept at each end of the dashed line
+const ARROW_GAP = 10;      // ARROW: clear space (px) between the GUIDE LINE and the arrow tail
+const ARROW_LEN = 20;      // ARROW: overall length, tail -> tip (px)
+const ARROW_HEAD_L = 9;    // ARROW: head length along the shaft (px)
+const ARROW_HEAD_HW = 2.6; // ARROW: head half-width (px); 9 long x 2.6 half ≈ 32° apex, CAD-sharp
 const SHADOW_COL = "#000";
 // Short names for a player's clickable objects, shared by pick() and end()
 const DOT = 'dot';   // lettered placeholder (head dot): drags only, never emits
@@ -180,11 +202,62 @@ function drawPlayers(){
   }
 }
 
+// Temporary overlay drawn only while a player's DOT is held. Three named parts:
+//   GUIDE LINE — vertical dashed line at the held dot's x. Starts DOT_GAP clear of the held dot
+//                and ends DOT_GAP clear of the nearest opposing dot (nearest measured
+//                perpendicular to the line, i.e. smallest |Δx|).
+//   ARROW      — short arrow perpendicular to the GUIDE LINE. Its tail sits ARROW_GAP clear of
+//                the line (near the far end) and its tip points at the target opponent's side.
+//   DELTA (Δ)  — horizontal displacement between the held player and that opponent, one decimal,
+//                printed beside the ARROW. It always shows; only the ARROW is hidden at 0.0 m.
+function drawDragGuide(){
+  if (!drag || drag.part !== DOT) return;
+  const p = drag.p, x = p.x;                           // GUIDE LINE sits at this x
+  let opp = null;
+  for (const q of players)
+    if (q.team !== p.team && (!opp || Math.abs(q.x - x) < Math.abs(opp.x - x))) opp = q;
+  if (!opp) return;
+  const off = HEAD_PX/s + DOT_GAP/s;                   // dot radius + margin, used at both ends
+  const dy = opp.y - p.y, dir = dy < 0 ? -1 : 1;       // from the held dot toward the opponent
+  if (Math.abs(dy) <= 2*off) return;                   // no room for the line between the two gaps
+  const y0 = p.y + dir*off, y1 = opp.y - dir*off;      // GUIDE LINE spans y0 -> y1 at x
+  const delta = Math.abs(opp.x - x);                   // DELTA: horizontal displacement (m)
+  const sgn = opp.x < x ? -1 : 1;                      // ARROW points this way along x
+  ctx.save();
+  ctx.globalAlpha = 0.5; ctx.strokeStyle = '#fff'; ctx.fillStyle = '#fff';
+  ctx.lineWidth = Math.max(0.06, 1.5/s); ctx.lineCap = 'butt';
+  ctx.setLineDash([9/s, 7/s]);
+  line(x, y0, x, y1);                                  // GUIDE LINE
+  const ax0 = x + sgn*ARROW_GAP/s;                     // ARROW tail, clear of the GUIDE LINE
+  const ax1 = ax0 + sgn*ARROW_LEN/s;                   // ARROW tip
+  if (delta >= 0.05){                                  // ARROW alone is hidden at 0.0 m, DELTA stays
+    ctx.setLineDash([]);
+    const hl = ARROW_HEAD_L/s, hw = ARROW_HEAD_HW/s;
+    line(ax0, y1, ax1 - sgn*hl, y1);                   // shaft stops at the head base
+    ctx.beginPath();                                   // sharp CAD-style head
+    ctx.moveTo(ax1, y1);
+    ctx.lineTo(ax1 - sgn*hl, y1 - hw);
+    ctx.lineTo(ax1 - sgn*hl, y1 + hw);
+    ctx.closePath(); ctx.fill();
+  }
+  // DELTA readout, always shown: past the ARROW tip, or past its tail when the ARROW is hidden
+  const label = '\u0394' + delta.toFixed(1) + ' m';
+  ctx.font = '700 ' + (12/s) + 'px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
+  ctx.textBaseline = 'middle';
+  const lw = ctx.measureText(label).width;
+  let tx = (delta >= 0.05 ? ax1 : ax0) + sgn*5/s, align = sgn > 0 ? 'left' : 'right';
+  if (sgn > 0 ? tx + lw > VB.x1 - 4/s : tx - lw < VB.x0 + 4/s){
+    align = sgn > 0 ? 'right' : 'left'; tx = x - sgn*5/s;
+  }
+  ctx.textAlign = align; ctx.fillText(label, tx, y1);
+  ctx.restore();                                       // restores alpha, colour and dash pattern
+}
+
 function draw(){
   ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,cw,ch);
   ctx.translate(ox,oy); ctx.scale(s,s);
-  drawCourt(); drawBeams(); drawNet(); drawPlayers();
+  drawCourt(); drawBeams(); drawNet(); drawPlayers(); drawDragGuide();
 }
 
 // ---- interaction (mouse + touch via pointer events)
@@ -212,6 +285,7 @@ cv.addEventListener('pointerdown', e => {
   const w = toWorld(px,py);
   drag = {p: hit.p, part: hit.part, dx: hit.p.x-w.x, dy: hit.p.y-w.y, sx: px, sy: py, moved: false};
   cv.setPointerCapture(e.pointerId); cv.classList.add('drag'); e.preventDefault();
+  draw();            // show the DOT guide immediately, even before the first move
 });
 cv.addEventListener('pointermove', e => {
   if (!drag) return;
@@ -263,8 +337,15 @@ function bindReach(id, out, set){
 bindReach('rn', 'rnv', v => rNet = v);
 bindReach('rb', 'rbv', v => rBase = v);
 bindReach('rnn', 'rnnv', v => rNarrow = v);
-document.getElementById('swap').addEventListener('click', () => { swapRoles(); status(); draw(); });
-document.getElementById('reset').addEventListener('click', () => { resetPlayers(); status(); draw(); });
+// ---- header: on narrow screens it is just a "Settings" bar (see the max-width media query);
+// tapping it toggles the full panel. Wide screens always show the panel and hide the bar.
+const bar = document.querySelector('header'), barToggle = document.getElementById('barToggle');
+function setBarOpen(open){
+  bar.dataset.open = open ? 'true' : 'false';
+  barToggle.setAttribute('aria-expanded', String(open));
+}
+barToggle.addEventListener('click', () => setBarOpen(bar.dataset.open !== 'true'));
+setBarOpen(false);      // start minimal; the court gets the whole screen until the bar is tapped
 status(); resize();
 </script>
 </body>
