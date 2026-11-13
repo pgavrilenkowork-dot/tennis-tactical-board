@@ -44,12 +44,12 @@ canvas.drag{cursor:grabbing}
   <button id="barToggle" type="button" aria-expanded="false" aria-controls="settings">Settings<span class="chev" aria-hidden="true">▾</span></button>
   <div id="settings">
     <div id="status"></div>
-    <label>Reach per side (net) <input id="rn" type="range" min="0.5" max="3" step="0.1" value="1"><output id="rnv">1.0 m</output></label>
-    <label>Reach per side (baseline) <input id="rb" type="range" min="1" max="8" step="0.1" value="4"><output id="rbv">4.0 m</output></label>
-    <label>Narrow reach per side (baseline) <input id="rnn" type="range" min="0.5" max="6" step="0.1" value="2.2"><output id="rnnv">2.2 m</output></label>
+    <label>Dynamic Volley Reach <input id="rn" type="range"><output id="rnv"></output></label>
+    <label>Reach per side (groundstroke) <input id="rb" type="range"><output id="rbv"></output></label>
+    <label>Fast balls reach margin per side <input id="rm" type="range"><output id="rmv"></output></label>
     <label>Show ball <input id="ballOn" type="checkbox"></label>
-    <label>Ball size <input id="ballSize" type="range" min="3" max="40" step="1" value="10"><output id="ballSizev">10 px</output></label>
-    <label>Arrow width <input id="arrowW" type="range" min="2" max="12" step="1" value="4"><output id="arrowWv">4 px</output></label>
+    <label>Ball size <input id="ballSize" type="range" min="3" max="40" step="1"><output id="ballSizev"></output></label>
+    <label>Arrow width <input id="arrowW" type="range" min="2" max="12" step="1"><output id="arrowWv"></output></label>
   </div>
 </header>
 <main><canvas id="c"></canvas></main>
@@ -76,7 +76,23 @@ const BALL = 'ball'; // the tennis ball: drags only, never emits
 const VEC = 'vec';   // the ball's arrow: drags (aims / stretches) only, never emits
 // world-x of a player's forehand: facing the net, top team (A) = screen-left, bottom team (B) = screen-right
 const fhSide = p => p.team === 'A' ? -1 : 1;
-let rNet = 1, rBase = 4, rNarrow = 2.2, attack = 'A';
+// Live reach settings, metres per side (the header sliders edit these). They are the defaults as well:
+// the slider specs below take their min/max/step, position and readout from them, so a number is never
+// written twice (the HTML carries nothing but the ids).
+//   rNet    — "Dynamic Volley Reach": a net defender's reach when his attacker is half a court away
+//   rBase   — "Reach per side (groundstroke)": the wide zone on the defender's own baseline
+//   rMargin — "Fast balls reach margin per side": the negative fraction (e.g. -0.15) taken off each side
+//             of that wide reach for the darker fast ball shadow, so it is never a setting of its own
+let rNet = 1.5, rBase = 4, rMargin = -0.30, attack = 'A';
+
+// The three reach sliders, defined once: range, the scale that turns the slider's number into the live
+// setting (metres, or whole percent for the margin) and how the readout prints it. syncReachUI() pushes
+// all of it into the header, so editing the numbers above is enough and the HTML stays bare.
+const REACH_SLIDERS = [
+  {id:'rn', out:'rnv', min:0.5, max:3,  step:0.1, scale:1,    fmt:v => v.toFixed(1) + ' m', get:() => rNet,    set:v => rNet = v},
+  {id:'rb', out:'rbv', min:1,   max:8,  step:0.1, scale:1,    fmt:v => v.toFixed(1) + ' m', get:() => rBase,   set:v => rBase = v},
+  {id:'rm', out:'rmv', min:-60, max:-5, step:1,   scale:0.01, fmt:v => v + '%',             get:() => rMargin, set:v => rMargin = v},
+];
 let players = [];
 function resetPlayers(){
   // Default: top team attacks; one player emits, forehand side only (right-handed: facing the net,
@@ -192,19 +208,67 @@ window.addEventListener('hashchange', () => {
   if (applyHash()) draw();
 });
 
-// reach per side grows linearly from the net value to the baseline value
-// net mode: a defender closer to the net than this (1/4 of net-to-baseline distance)
+// ---- defender reach
+// net mode: a defender closer to the net than this (1/4 of the net-to-baseline distance)
 const NET_MODE_Y = CL/8;
 const inNetMode = q => Math.abs(q.y) < NET_MODE_Y;
-function reachAt(y){
-  // fixed net value in net mode, then linear up to the baseline value
-  const t = Math.max(0, Math.min(1, (Math.abs(y) - NET_MODE_Y) / (CL/2 - NET_MODE_Y)));
-  return rNet + (rBase - rNet) * t;
+
+// Static wingspan: an average player's shoulder-to-racket-tip reach is about 1 m per side without
+// moving his feet, i.e. 2 m across. It is the tight end of the net defender's reach (attacker on top
+// of him) and, through that volley reach, the tight end of every groundstroke zone as well.
+const STATIC_WINGSPAN = 2.0;             // metres, both sides together
+const STATIC_REACH = STATIC_WINGSPAN/2;  // metres, per side
+
+// Every player distance here is head dot to head dot: a plain distance between two points on the
+// court (each player's x, y).
+const headDist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+// A net defender's reach per side: exactly "Dynamic Volley Reach" when the attacker is half a court
+// length away and exactly the static wingspan when the attacker is on top of him, linear in between
+// and extrapolated outside. An attacker inside the court keeps it below the setting; an attacker
+// farther back than his own baseline pushes it past the setting.
+const volleyReach = d => STATIC_REACH + (rNet - STATIC_REACH) * (d / (CL/2));
+
+// How far a defender stands past the edge of the net zone: 0 on that edge, 1 on his own baseline, and
+// held at 1 behind it, so a defender camped behind the baseline keeps the plain baseline reach.
+const pastNetZone = y =>
+  Math.max(0, Math.min(1, (Math.abs(y) - NET_MODE_Y) / (CL/2 - NET_MODE_Y)));
+
+// A groundstroker's wide reach per side, metres. On the edge of the net zone it is exactly the net
+// defender's volley reach, so the zone does not jump when he steps out of net mode; from there it
+// opens to exactly rBase as he retreats to his own baseline. Both ends follow the attacker: the near
+// end is the volley reach at his own distance.
+const groundReach = (d, y) => {
+  const edge = volleyReach(d);
+  return edge + (rBase - edge) * pastNetZone(y);
+};
+
+// One source lights at a time — a tap clears every other dot first — so there is a single attacker:
+// the player whose forehand/backhand dot is on, and he alone sizes a defender. His partner never
+// does. Before any dot is tapped nobody is attacking yet, so the nearest attacker stands in for him.
+const isEmitting = p => p.l || p.r;
+const attacker = () => players.find(p => p.team === attack && isEmitting(p)) || null;
+function attackerDist(q){
+  const p = attacker();
+  if (p) return headDist(p, q);
+  let d = Infinity;
+  for (const a of players) if (a.team === attack) d = Math.min(d, headDist(a, q));
+  return d;               // a team always fields two players, so d stays finite
 }
+// in net mode a defender has a single zone, the volley reach. Outside it his wide groundstroke zone
+// runs from that same volley reach at the net-zone edge to rBase on his baseline, and his fast ball
+// zone is simply that width cut by the margin: no interpolation of its own, so the dark shadow stays
+// exactly the same percentage narrower than the wide one wherever he stands.
+const defenderReach = q => inNetMode(q) ? volleyReach(attackerDist(q))
+                                       : groundReach(attackerDist(q), q.y);
+// The margin is taken off each side of the wide reach, so -0.15 leaves 85% of it on the forehand side
+// and 85% on the backhand side — the dark shadow's whole width is 85% of the wide one, and shortening
+// the reach by a percentage rather than a fixed number of metres keeps that ratio wherever he stands.
+const fastReach = q => { const r = defenderReach(q); return r + r * rMargin; };
 
 // an attacker always has a fixed 2 m total reach (1 m per side), wherever he stands
 const ATTACK_REACH = 1;
-const reachOf = p => p.team === attack ? ATTACK_REACH : reachAt(p.y);
+const reachOf = p => p.team === attack ? ATTACK_REACH : defenderReach(p);
 
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 let cw = 0, ch = 0, dpr = 1, s = 1, ox = 0, oy = 0;
@@ -229,14 +293,14 @@ const toWorld = (px,py) => ({x:(px-ox)/s, y:(py-oy)/s});
 //      value, so re-tinting the ball is a one-line edit. '#cfea55' is the optic yellow it ships
 //      with; other ideas: '#d8f24a' (brighter), '#f2e14a' (classic yellow), '#e8703a' (clay).
 //      Any CSS hex ('#rrggbb') or [r, g, b] array works, and opts.color overrides it per call.
-const BALL_COLOR = '#cfea55';
+const BALL_COLOR = '#d6d606';
 const BALL_SEAM_COLOR = '#ffffff';            // the seam's lit colour (real balls have white seams)
 
 // ---- overall brightness of the ball: 1 is the plain shading model below, and 1.3 is the punchier
 //      felt tennis_ball.html ships with (its light dim is gentler, worth about 1.3x here). It
 //      multiplies the body ramp and the seam, then clips at 255, so the highlight goes sunny and
 //      the shadow side stays readable. opts.brightness overrides it per call.
-const BALL_BRIGHTNESS = 1.3;
+const BALL_BRIGHTNESS = 1.1;
 
 // ---- tennis ball: a self-contained sphere renderer (shaded body + the classic four-lobe seam
 //      band), so the court can show a real tennis ball that the user can drag around.
@@ -251,7 +315,7 @@ const BALL_BRIGHTNESS = 1.3;
 //              seamColor seam colour, same forms      (default BALL_SEAM_COLOR)
 //              brightness overall brightness multiplier (default BALL_BRIGHTNESS)
 const drawTennisBall = (() => {
-  const D = {quat: [0.0698, 0.6742, -0.7349, 0.0210], az: -82, el: 26, seam: 4.0, segments: 252};
+  const D = {quat: [0.0698, 0.6742, -0.7349, 0.0210], az: 0, el: 0, seam: 4.0, segments: 252};
   // felt ramp: the five shading stops of the body, each the base colour plus an offset — the
   // highlight lifts it, the three lower bands drain it. Integers, so the default look is exact.
   const TINT = [[0.00,  26,  14,  55],
@@ -373,7 +437,7 @@ const drawTennisBall = (() => {
 // still a floor, so the ball only grows past ball.px when you zoom in enough for it to matter.
 // Like a player it is clamped to the visible rectangle, and it is drawn above everything else.
 const BALL_R = 0.0343;                        // true radius of a tennis ball, metres
-const BALL_PX = 10;                            // drawn radius, CSS px  ← the size you actually see
+const BALL_PX = 11;                            // drawn radius, CSS px  ← the size you actually see
 const ball = {
   on: false,
   x: 0, y: 6.5,                               // starts on the centre line, behind the near service line
@@ -479,10 +543,11 @@ function drawNet(){
   for (const x of [-POST, POST]){ ctx.beginPath(); ctx.arc(x,0,0.16,0,7); ctx.fill(); }
 }
 
-// Every active source of an attacker shines at BOTH defenders.
+// A beam is only ever lit by the attacker who is hitting, and that attacker's head-dot distance to a
+// defender sizes that defender's reach here — the very same distance the reach line and end dots use
+// (see attackerDist), so the shadow and the line can never disagree.
 function drawBeams(){
   const T = 400;
-  const kN = rNarrow / rBase;   // narrow (fast ball) reach = wide reach scaled to rNarrow at the baseline
   ctx.save();
   ctx.beginPath(); ctx.rect(VB.x0,VB.y0,VB.x1-VB.x0,VB.y1-VB.y0); ctx.clip();
   const defenders = players.filter(q => q.team !== attack);
@@ -492,8 +557,12 @@ function drawBeams(){
       if (!(sx < 0 ? p.l : p.r)) continue;
       const S = {x: p.x + sx*rp, y: p.y};
       for (const q of defenders){
-        for (const wide of (inNetMode(q) ? [false] : [true, false])){   // net mode: one dark beam only
-          const rq = reachAt(q.y) * (wide || inNetMode(q) ? 1 : kN);
+        // net mode: one dark beam only; otherwise the wide (lighter) zone, then the fast ball (darker)
+        // one, cut from it by the margin. Both go through the same defenderReach/fastReach the reach
+        // line uses, so the line ends and the shadow edge beams can never drift apart.
+        const zones = inNetMode(q) ? [[defenderReach(q), 0.3]]
+                                   : [[defenderReach(q), 0.15], [fastReach(q), 0.3]];
+        for (const [rq, alpha] of zones){
           const A = {x: q.x - rq, y: q.y}, B = {x: q.x + rq, y: q.y};
           const dA = {x: A.x-S.x, y: A.y-S.y}, dB = {x: B.x-S.x, y: B.y-S.y};
           if (Math.hypot(dA.x,dA.y) < 1e-6 || Math.hypot(dB.x,dB.y) < 1e-6) continue;
@@ -501,7 +570,7 @@ function drawBeams(){
           ctx.globalAlpha = 0.22; ctx.fillStyle = SHADOW_COL; //col;
           ctx.beginPath(); ctx.moveTo(S.x,S.y); ctx.lineTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.closePath(); ctx.fill();
           // shadow behind defender
-          ctx.globalAlpha = wide ? 0.15 : 0.3; ctx.fillStyle = SHADOW_COL;
+          ctx.globalAlpha = alpha; ctx.fillStyle = SHADOW_COL;
           ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y);
           ctx.lineTo(B.x+dB.x*T,B.y+dB.y*T); ctx.lineTo(A.x+dA.x*T,A.y+dA.y*T); ctx.closePath(); ctx.fill();
         }
@@ -517,13 +586,15 @@ function drawPlayers(){
     ctx.strokeStyle = col; ctx.lineCap = 'round';
     ctx.lineWidth = 3.5/s;
     // a defender outside net mode: half-transparent line over the whole (wide, lighter-shadow) reach,
-    // opaque over the narrow (guaranteed, darker-shadow) reach. In net mode the reach is a single dark
-    // zone, so the line is drawn solid all the way — same as an attacker's, no dashes.
+    // opaque over the fast ball (darker-shadow) reach, which is that same wide reach cut by the margin.
+    // In net mode the reach is a single dark zone, so the line is drawn solid all the way — same as an
+    // attacker's, no dashes. Every reach here comes from reachOf/defenderReach/fastReach, i.e. from the
+    // attacker who is actually hitting and from the identical numbers the shadow edges use.
     const twoZones = !att && !inNetMode(p);
     if (twoZones) ctx.globalAlpha = 0.5;
     line(p.x-r,p.y,p.x+r,p.y);
     ctx.globalAlpha = 1;
-    if (twoZones){ const rn = r * rNarrow / rBase; line(p.x-rn,p.y,p.x+rn,p.y); }
+    if (twoZones){ const rn = fastReach(p); line(p.x-rn,p.y,p.x+rn,p.y); }
     for (const sx of [-r, r]){
       const on = att && (sx < 0 ? p.l : p.r);
       ctx.beginPath(); ctx.arc(p.x+sx,p.y,(att ? 7 : 4)/s,0,7);
@@ -703,14 +774,24 @@ function status(){
   document.getElementById('status').textContent =
     NAME[attack] + ' attacks (beams), ' + NAME[def].toLowerCase() + ' defends (shadows). Tap an attacker’s forehand (FH) or backhand (BH) dot to emit from that side only (tap again to stop) — the lettered placeholder never emits; tap a defender’s placeholder to swap roles.';
 }
-function bindReach(id, out, set){
-  document.getElementById(id).addEventListener('input', e => {
-    set(+e.target.value); document.getElementById(out).textContent = (+e.target.value).toFixed(1) + ' m'; draw();
-  });
+// ---- reach sliders: REACH_SLIDERS owns the range, so the header needs no min/max/step/value and the
+// readout is written from the live setting. The initial position follows rNet/rBase/rMargin, which means
+// editing those constants is enough — and because the margin is stored as a fraction but shown as a whole
+// percent, the slider's number is scaled on the way in and out.
+function syncReachUI(){
+  for (const sl of REACH_SLIDERS){
+    const el = document.getElementById(sl.id), out = document.getElementById(sl.out);
+    el.min = sl.min; el.max = sl.max; el.step = sl.step;
+    el.value = sl.get() / sl.scale;                 // snapped to the step by the browser
+    out.textContent = sl.fmt(+el.value);
+    el.oninput = () => {                            // oninput (not addEventListener) keeps one handler
+      sl.set((+el.value) * sl.scale);
+      out.textContent = sl.fmt(+el.value);
+      draw();
+    };
+  }
 }
-bindReach('rn', 'rnv', v => rNet = v);
-bindReach('rb', 'rbv', v => rBase = v);
-bindReach('rnn', 'rnnv', v => rNarrow = v);
+syncReachUI();
 // ---- ball checkbox: show / hide the tennis ball; once shown it drags like a player does, and its
 // arrow comes with it. The URL carries the ball, so toggling rewrites the fragment as well.
 const ballOn = document.getElementById('ballOn');
