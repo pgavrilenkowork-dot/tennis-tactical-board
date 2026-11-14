@@ -67,9 +67,9 @@ const ARROW_LEN = 20;      // ARROW: overall length, tail -> tip (px)
 const ARROW_HEAD_L = 9;    // ARROW: head length along the shaft (px)
 const ARROW_HEAD_HW = 2.6; // ARROW: head half-width (px); 9 long x 2.6 half ≈ 32° apex, CAD-sharp
 const SHADOW_COL = "#000";
-// The dashed defensive reach circle's stroke, in CSS px: 2 px wide, 9 px dashes with 7 px gaps. The
-// ball arrow's continuation wears exactly the same stroke, so the two dashed guides read as one
-// family. Court-space drawing divides these by s to land on pixels; pixel-space drawing uses them as is.
+// The dashed reach guides' stroke, in CSS px: 2 px wide, 9 px dashes with 7 px gaps. The ball arrow's
+// continuation and the MBCR curve both wear it, so the dashed guides read as one family. Court-space
+// drawing divides these by s to land on pixels; pixel-space drawing uses them as is.
 const DASH_W = 2, DASH_ON = 9, DASH_OFF = 7;
 // Short names for a player's clickable objects, shared by pick() and end()
 const DOT = 'dot';   // lettered placeholder (head dot): drags only, never emits
@@ -313,6 +313,154 @@ const arcReach = p => Math.max(0, reachFromSource(ball, p));
 // the reach by a percentage rather than a fixed number of metres keeps that ratio wherever he stands.
 const fastReach = q => { const r = defenderReach(q); return r + r * rMargin; };
 
+// ---- MBCR (Maximum Ball Contact Reach): the reach the ball's own flight time allows, in metres.
+//      The player's speed is the same for everyone and follows from the court — while the ball flies
+//      the court's diagonal he crosses from the edge of his wingspan to the singles sideline — so Vp
+//      is a constant and only the flight time changes anything. Vb0 is the reference ball speed the
+//      formula is calibrated on. A slow ball therefore gives him more time, never more speed.
+const VB0 = 85;                                                             // km/h, reference ball speed
+const VP  = VB0 * ((SINGLES/2 - STATIC_REACH) / Math.hypot(CL, SINGLES/2));  // km/h, ≈ 10.98
+// The footwork the flight buys him: Dp = Vp * (dball / Vball), metres, for a BPCP dball metres down the
+// arrow. The wingspan is not in it — this is how far he can get, not what he can reach once he is
+// there — so it is also the radius of the circle his partner covers before the ball is met.
+const travelBy = dball => VP * (dball / Math.max(1e-6, ball.vel));
+// The MBCRL length for a BPCP dball metres down the arrow: his footwork Dp = Vp*(dball/Vball) plus
+// exactly one static wingspan. It is the reach measured from his centre, i.e. Dp + STATIC_REACH.
+const mbcrLen = dball => STATIC_REACH + travelBy(dball);
+
+// The BPCP that levels with p: where the arrow's ray crosses p's own reach line, parallel to the net.
+// That is the last BPCP he can still meet the ball on — his front half ends there, exactly where the
+// example's sweep stops — and it is the one the MBCRL is drawn to. Only ahead of the ball: a level
+// arrow, or a path already past him, names no such point (null).
+function levelBPCP(p, ray){
+  if (Math.abs(ray.uy) < 1e-9) return null;
+  const dball = (p.y - ray.y) / ray.uy;
+  if (!(dball > 0)) return null;
+  return {dball, x: ray.x + ray.ux*dball, y: p.y};
+}
+
+// The stretch of the arrow's path that lies inside p's MBCR reach: the two BPCPs where the ball's own
+// distance from him equals the reach the flight has bought him by then, i.e. where the path crosses the
+// MBCR curve itself. Those are the edge MBCRPs — the earliest and the latest BPCP he can possibly meet
+// — and both of them sit exactly on the trajectory. They are the roots of
+//     |ball + s*u - p|² = mbcrLen(s)²,
+// a quadratic in s because both sides grow linearly with the distance flown. The path is inside his
+// reach between the roots and outside it everywhere else, so a near miss gives a short window and a
+// path passing him closely gives a long one that runs on behind him. null when the path never comes
+// inside his reach at all (no real root — the near miss in the screenshot — or only behind the ball).
+function mbcrWindow(p, ray){
+  const k = VP / Math.max(1e-6, ball.vel);            // metres of footwork per metre of ball flight
+  const ox = ray.x - p.x, oy = ray.y - p.y;           // the ball, from his centre
+  const A = 1 - k*k;                                  // k = 1 exactly: reach grows as fast as the ball
+  const B = 2*((ox*ray.ux + oy*ray.uy) - STATIC_REACH*k);
+  const C = ox*ox + oy*oy - STATIC_REACH*STATIC_REACH;
+  if (Math.abs(A) < 1e-9){
+    if (Math.abs(B) < 1e-9) return C <= 0 ? {s1: 0, s2: Infinity} : null;
+    const r = -C/B;                                   // one root: inside on one side of it only
+    if (B > 0) return r > 0 ? {s1: 0, s2: r} : null;
+    return {s1: Math.max(0, r), s2: Infinity};
+  }
+  const disc = B*B - 4*A*C;
+  if (disc < 0) return null;                          // the path never comes inside his reach
+  const rt = Math.sqrt(disc), r1 = (-B - rt)/(2*A), r2 = (-B + rt)/(2*A);
+  // k < 1: the ball is the faster of the two, so the reach catches up and is then left behind again —
+  // inside between the roots. k > 1 (a very slow ball) is the other way round: once he is level with it
+  // he stays with it, so everything past the far root is inside.
+  const lo = A > 0 ? Math.min(r1, r2) : Math.max(r1, r2);
+  const hi = A > 0 ? Math.max(r1, r2) : Infinity;
+  if (hi <= 0) return null;                           // the whole window is behind the ball
+  return {s1: Math.max(0, lo), s2: hi};
+}
+
+// Where p meets the ball: the BPCP on the arrow's path that his reach actually covers. It stays on the
+// trajectory, so the contact dot and the beams can never name a place the ball is not — a sideways
+// clamp on his reach line (which is what this used to be) put the contact at the edge of the old arc
+// model while the MBCRL was measured with the MBCR model, so the planned contact and the edge MBCRP
+// disagreed whenever the path missed him.
+//   the levelling BPCP, when his reach covers it: he meets the ball head on, as the beams always have;
+//   else the end of the reachable window nearest to it: he takes a step early or late to meet the
+//   ball, and the contact stays on its path;
+//   else — the path never comes inside his reach — the MBCRP, the furthest he can reach toward it at
+//   the moment the ball levels with him, with reached = false: nothing on that flight can be met, and
+//   the plan can only be to stretch that far.
+function mbcrContact(p, ray){
+  const at = s => ({x: ray.x + ray.ux*s, y: ray.y + ray.uy*s});
+  const lv = levelBPCP(p, ray), win = mbcrWindow(p, ray);
+  // dball is how far down the arrow that contact sits: the flight he has to wait for, which is what his
+  // partner's circle is measured against (travelBy).
+  if (win){
+    const s = !lv ? win.s1 : Math.max(win.s1, Math.min(win.s2, lv.dball));
+    return {...at(s), reached: true, dball: s};
+  }
+  const L = mbcrLen(lv ? lv.dball : 0);               // his reach when the ball levels with him
+  const sgn = (lv ? lv.x : ray.x) >= p.x ? 1 : -1;    // ... on the side the ball is on
+  return {x: p.x + sgn*L, y: p.y, reached: false, dball: lv ? lv.dball : 0};
+}
+
+// The MBCR curve: the tip of the MBCRL for every direction he can sweep — the envelope of every possible
+// MBCRL — sampled the way the example does it: sweep the ANGLE about p, uniformly, and for each ray solve
+// where it crosses the arrow's path. That crossing gives the BPCP's distance along the PATH, never its
+// distance from p, so the sample is p + (cos θ, sin θ) * L(s). Sweeping the angle instead of the distance
+// is what keeps the curve smooth: where the path runs close to p a short stretch of it swings through a
+// wide arc of directions, and a distance- or time-uniform sweep jumps across that arc in a single step (a
+// chord cut clean across the envelope). Angle steps are bounded, so they follow the swing instead. A ray
+// parallel to the arrow names no crossing and is skipped.
+//
+// The sweep covers the stretch of the flight from the ball itself to the far edge MBCRP (mbcrWindow),
+// so it runs continuously from right beside him out to where the ball leaves his reach for good. Its
+// first sample is the ball's own BPCP: s = 0, where his MBCRL is exactly STATIC_REACH, so that end sits
+// on his wingspan circle in the direction of the ball — the curve touches him, as the example's does
+// (its sweep also starts at the direction to the ball). Its last sample is the far edge MBCRP, on the
+// trajectory. The near intersection is NOT an end: the ball is normally still outside his reach at s = 0
+// and only comes inside it at win.s1, but stopping the sweep there would cut the curve off out in the
+// court and leave it floating away from the player. A path that never enters his reach has no far edge
+// MBCRP, and the sweep then runs out to where the ball levels with him or leaves the screen, whichever
+// comes first: the same envelope, but with that end off the trajectory, since nothing of that flight
+// can be met.
+function mbcrCurve(p){
+  const ray = ballRay(), c = toPx(ball);
+  const exit = Math.max(0, edgeReach(c.x, c.y, ray.ux, ray.uy)/s);   // metres, ball -> screen edge
+  const lv = levelBPCP(p, ray);
+  const win = mbcrWindow(p, ray);                                    // the reachable stretch, or null
+  const sA = 0;                                                      // start at the ball's own BPCP
+  const sB = Math.min(win ? win.s2 : (lv ? lv.dball : exit), exit);  // ... out to the far edge, on screen
+  const a0 = Math.atan2(ray.y + ray.uy*sA - p.y, ray.x + ray.ux*sA - p.x);   // direction to the first
+  const a1 = Math.atan2(ray.y + ray.uy*sB - p.y, ray.x + ray.ux*sB - p.x);   // ... and to the last
+  let da = a1 - a0;                                                  // the short way round
+  while (da >  Math.PI) da -= 2*Math.PI;
+  while (da < -Math.PI) da += 2*Math.PI;
+
+  // A path straight away from or straight at him spans no angle at all: every BPCP lies on one ray, so
+  // the envelope is that ray's own stretch, r = mbcrLen(s) for s from the first BPCP to the last.
+  // There is no direction to spread samples over, so sample that one ray by distance instead.
+  if (Math.abs(da) < 1e-4){
+    const pts = [], N = 48;
+    for (let i = 0; i <= N; i++){
+      const s2 = sA + (sB - sA)*i/N, bx = ray.x + ray.ux*s2, by = ray.y + ray.uy*s2;
+      const dx = bx - p.x, dy = by - p.y, d = Math.hypot(dx, dy);
+      if (d < 1e-6) continue;
+      const L = mbcrLen(s2);
+      pts.push({x: p.x + dx/d*L, y: p.y + dy/d*L});
+    }
+    return {pts, lv, win, exit};
+  }
+
+  const steps = Math.max(10, Math.round(Math.abs(da)*200));          // uniform in angle: ~200 per radian
+  const pts = [];
+  for (let i = 0; i <= steps; i++){
+    const th = a0 + da*i/steps, cx = Math.cos(th), cy = Math.sin(th);
+    const den = cx*ray.uy - cy*ray.ux;                        // the ray against the arrow's direction
+    if (Math.abs(den) < 1e-9) continue;                       // parallel to the path: no crossing
+    const u = ((ray.x - p.x)*ray.uy - (ray.y - p.y)*ray.ux) / den;   // p -> BPCP, metres
+    if (!(u >= 0)) continue;                                  // the crossing lies behind him
+    const s2 = (p.x + cx*u - ray.x)*ray.ux + (p.y + cy*u - ray.y)*ray.uy;  // ball -> BPCP, metres
+    if (s2 < sA - 1e-6 || s2 > sB + 1e-6) continue;           // outside the stretch the sweep covers
+    const L = mbcrLen(s2);
+    pts.push({x: p.x + cx*L, y: p.y + cy*L});                 // the MBCRL tip for that direction
+  }
+  return {pts, lv, win, exit};
+}
+
 // an attacker always has the fixed static wingspan per side, wherever he stands
 const reachOf = p => p.team === attackTeam() ? STATIC_REACH : defenderReach(p);
 
@@ -339,29 +487,13 @@ function ballRay(){
   return {x: ball.x, y: ball.y, ux: Math.cos(a), uy: Math.sin(a)};
 }
 
-// Where p meets the ball on his own reach line: the horizontal line through his head, parallel to the
-// net, the line the beams have always started from. It is where the arrow's ray crosses that line,
-// held at the arc's edge when the crossing is beyond his reach, so the contact never leaves the dashed
-// arc. A level arrow (or a crossing behind the ball) names no point on the line, so the arc's edge on
-// the ball's side stands in for it.
-function lineContact(p, ray, R){
-  const sgn = ball.x < p.x ? -1 : 1;
-  if (Math.abs(ray.uy) > 1e-9){
-    const t = (p.y - ray.y) / ray.uy;
-    if (t >= 0){
-      const x = ray.x + ray.ux*t;
-      return {x: Math.max(p.x - R, Math.min(p.x + R, x)), y: p.y, clamped: Math.abs(x - p.x) > R};
-    }
-  }
-  return {x: p.x + sgn*R, y: p.y, clamped: true};
-}
-
 // Which player of the attacking team meets the ball, on which side, and where he is expected to hit.
-// The arrow's ray is cut by each player's front arc and the player whose arc the ray reaches wins (a
-// trajectory that misses every arc still picks the arc nearest to it, so beams, shadows and contact dot
-// never vanish just because the arrow is off the arcs). The contact point itself stays on his reach
-// line, parallel to the net, clamped to the arc by lineContact; beams start there and the reach line is
-// extended to it (see drawPlayers).
+// A player has the ball when the path comes inside his MBCR reach (mbcrWindow); ties, and a path that
+// misses everybody, are settled by the gap between the trajectory and his reach, so beams, shadows and
+// contact dot never vanish just because the arrow is off every reach. The contact point is mbcrContact,
+// which is on the ball's own path whenever his reach reaches it — so the contact dot, the beams that
+// start there and the height of the MBCRL all read one model, the MBCR one, instead of the contact
+// coming from the old arc while the reach line came from the flight time.
 function ballHitter(){
   if (!ball.on) return null;
   const ray = ballRay();
@@ -369,33 +501,21 @@ function ballHitter(){
   const team = attackTeam();
   let best = null;
   for (const p of players){
-    if (p.team !== team || !ballInFront(p)) continue;   // behind the player: no arc, no hit
-    const R = arcReach(p);
+    if (p.team !== team || !ballInFront(p)) continue;   // behind the player: no reach, no hit
+    const lv = levelBPCP(p, ray);
+    const R = mbcrLen(lv ? lv.dball : 0);   // his reach when the ball levels with him
+    const win = mbcrWindow(p, ray);         // ... and whether the path ever comes inside it
     const ox = ray.x - p.x, oy = ray.y - p.y;
-    const c = ox*ox + oy*oy - R*R;
-    let crossing = c <= 0;              // the ball is already inside the arc
-    if (!crossing){
-      const b = ox*ray.ux + oy*ray.uy;
-      const disc = b*b - c;
-      if (disc >= 0){
-        const rt = Math.sqrt(disc);
-        for (const t of [-b - rt, -b + rt]){
-          if (t < 0) continue;                            // only forward along the arrow
-          if ((ray.y + ray.uy*t - p.y) * frontSign(p) < 0) continue;   // front half only
-          crossing = true; break;
-        }
-      }
-    }
-    // a trajectory outside this arc still makes him a contender: the gap between his arc and the
+    // a trajectory outside his reach still makes him a contender: the gap between that reach and the
     // trajectory decides who is closest, so the beams keep showing even when the arrow misses both
-    const miss = crossing ? 0 : Math.max(0, Math.abs(ox*ray.uy - oy*ray.ux) - R);
+    const miss = win ? 0 : Math.max(0, Math.abs(ox*ray.uy - oy*ray.ux) - R);
     const better = !best || miss < best.miss - 1e-9 ||
                    (Math.abs(miss - best.miss) <= 1e-9 && Math.abs(p.y) < Math.abs(best.p.y));
-    if (better) best = {p, R, miss};
+    if (better) best = {p, R, miss, win, lv};
   }
   if (!best) return null;
-  const p = best.p, hit = lineContact(p, ray, best.R);
-  return {...best, hit, clamped: hit.clamped,
+  const p = best.p, hit = mbcrContact(p, ray);
+  return {...best, hit, clamped: !hit.reached,
           side: Math.abs(hit.x - p.x) < 1e-9 ? (ball.x < p.x ? -1 : 1) : (hit.x < p.x ? -1 : 1)};
 }
 
@@ -648,7 +768,7 @@ function arrowGeom(){
           tip:  {x: c.x + ux*len, y: c.y + uy*len}};
 }
 
-// The dashed continuation wears the arrow's own colour, lightened halfway to white: at half opacity
+// The dashed continuation wears the arrow's own colour, lightened halfway to white: at 0.6 opacity
 // the plain team colour reads too dim over the court, and a lightened version keeps the team's hue
 // while staying visible all the way to the screen edge.
 function brighten(hex){
@@ -670,19 +790,23 @@ function edgeReach(x, y, ux, uy){
 // shaft + filled head, in pixel space above the court. The tail cap is flat ("butt"), so the gap
 // really is empty: the arrow begins exactly gap px past the ball's edge and never covers the ball.
 // Its length is the ball's speed (see VEL_PER_M), so it grows with the shot and shrinks with it.
-// Past the tip the same direction carries on as a thin, half-transparent dashed line in the arrow's
-// own colour (lightened, see brighten), right to the edge of the screen, so the shot line reads
-// across the whole court without competing with the arrow itself. That dashed run is also the aiming
-// handle: it is long, so grabbing it far from the ball gives a long lever arm (see rotateArrow).
+// Past the tip the same direction carries on as a thin dashed line at 0.6 — the opacity the example
+// gives its dashed trajectory — in the arrow's own colour (lightened, see brighten), right to the edge
+// of the screen, so the shot line reads across the whole court without competing with the arrow itself.
+// That dashed run is also the aiming handle: it is long, so grabbing it far from the ball gives a long
+// lever arm (see rotateArrow).
 function drawBallArrow(){
   if (!ball.on) return;
   const g = arrowGeom(), col = arrowColor();
+  // The dashed run is the flight itself, drawn whole: it never stops at a player's reach, because the
+  // trajectory is what the arrow means and a line that ends mid-court reads as the arrow being cut
+  // short. It runs from the tip all the way to the edge of the screen, wherever the arrow is aimed.
   const run = edgeReach(g.tip.x, g.tip.y, g.ux, g.uy);   // tip -> screen edge, along the arrow
   if (run > 0.5){
     ctx.save();
-    ctx.globalAlpha = 0.5;
-    ctx.strokeStyle = brighten(col);                // same hue, half way to white: readable at 0.5
-    ctx.lineWidth = DASH_W; ctx.lineCap = 'butt';   // exactly the reach circle's stroke, in CSS px
+    ctx.globalAlpha = 0.6;                          // the opacity of the example's dashed trajectory
+    ctx.strokeStyle = brighten(col);                // same hue, half way to white: readable at 0.6
+    ctx.lineWidth = DASH_W; ctx.lineCap = 'butt';   // exactly the MBCR curve's stroke, in CSS px
     ctx.setLineDash([DASH_ON, DASH_OFF]);
     line(g.tip.x, g.tip.y, g.tip.x + g.ux*run, g.tip.y + g.uy*run);
     ctx.restore();
@@ -804,9 +928,10 @@ function drawPlayers(){
     const col = COL[p.team], att = p.team === atk, r = reachOf(p);
     ctx.strokeStyle = col; ctx.lineCap = 'round';
     ctx.lineWidth = 3.5/s;
-    // In ball mode nothing may reach past the dashed arc, so when a net player's arc is narrower than
-    // his fixed wingspan the reach line — and its end dots — are shortened to the arc. Otherwise it is
-    // the full STATIC_WINGSPAN/2.
+    // In ball mode the reach line — and its end dots — is still held inside the zone the defensive
+    // model gives him (arcReach), so when that zone is narrower than his fixed wingspan the line
+    // shortens to it. Otherwise it is the full STATIC_WINGSPAN/2. The MBCR reach the flight buys him is
+    // a separate thing and rides on top, as the MBCRL to the MBCRP below.
     const arc = ball.on && att && ballInFront(p) ? arcReach(p) : 0;
     const half = arc ? Math.min(r, arc) : r;
     // a defender outside net mode: half-transparent line over the whole (wide, lighter-shadow) reach,
@@ -814,7 +939,7 @@ function drawPlayers(){
     // In net mode the reach is a single dark zone, so the line is drawn solid all the way. Every reach
     // here comes from reachOf/defenderReach/fastReach, i.e. from the attacker who is actually hitting
     // and from the identical numbers the shadow edges use. In ball mode an attacker's line is the
-    // wingspan one (clipped to his arc above), solid, with small defensive-style end dots (see below).
+    // wingspan one (clipped to that zone above), solid, with small defensive-style end dots (see below).
     const twoZones = !att && !inNetMode(p);
     if (twoZones) ctx.globalAlpha = 0.5;
     line(p.x-half,p.y,p.x+half,p.y);
@@ -822,10 +947,11 @@ function drawPlayers(){
     if (twoZones){ const rn = fastReach(p); line(p.x-rn,p.y,p.x+rn,p.y); }
 
     // ball mode: the hitter's reach line is extended horizontally, parallel to the net (at 0.5
-    // opacity), from the end dot on the ball's side to the expected contact point. That point is held
-    // at the arc's edge, so the extension can never overshoot the arc, and it ends in the contact dot
-    // drawn just below.
-    if (hitter && hitter.p === p){
+    // opacity), from the end dot on the ball's side to the expected contact point — but only when the
+    // contact sits on that line at all, i.e. when he meets the ball level with him. A contact he has to
+    // step forward or back for, and the one he can only stretch toward, are off the line by definition
+    // (see mbcrContact), so nothing is extended and the contact dot stands on its own.
+    if (hitter && hitter.p === p && Math.abs(hitter.hit.y - p.y) < 1e-9){
       const sgn = hitter.hit.x >= p.x ? 1 : -1, from = p.x + sgn*half;
       if ((hitter.hit.x - from)*sgn > 0){
         ctx.save();
@@ -835,18 +961,61 @@ function drawPlayers(){
       }
     }
 
-    // ball mode: a dashed half-circle arc in front of every attacking player. Its radius is the
-    // defensive reach (lighter shadow) at the ball's distance, so it opens and closes with the ball;
-    // a player with the ball behind him has no arc at all.
-    if (arc){
-      const down = frontSign(p) > 0;
+    // ball mode: only the man who actually meets the ball carries the MBCR curve — the reach the ball's
+    // own flight time allows, swept like the example: uniformly in ANGLE about him, each ray's BPCP
+    // giving r = Dp + STATIC_REACH (mbcrCurve). It starts right beside him on his wingspan circle, in
+    // the direction of the ball, and runs continuously out to the far BPCP where the ball's path finally
+    // leaves that reach; a player with the ball behind him has none. Solid team colour, like the
+    // example's curve. His partner is not meeting this ball, so a reach curve would claim he could: he
+    // gets the ground he can cover instead (below).
+    const fwd = ball.on && att && ballInFront(p);
+    const curve = fwd && hitter && hitter.p === p ? mbcrCurve(p) : null;
+    if (curve && curve.pts.length > 1){
       ctx.save();
-      ctx.globalAlpha = 0.5;
       ctx.setLineDash([DASH_ON/s, DASH_OFF/s]);
       ctx.lineWidth = DASH_W/s;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, arc, down ? 0 : Math.PI, down ? Math.PI : Math.PI*2);
+      ctx.moveTo(curve.pts[0].x, curve.pts[0].y);
+      for (let i = 1; i < curve.pts.length; i++) ctx.lineTo(curve.pts[i].x, curve.pts[i].y);
       ctx.stroke();
+      ctx.restore();
+    }
+
+    // ball mode, the partner: a plain circle instead of the sweep. Its radius is exactly the ground he
+    // can travel before his partner meets the ball — travelBy at the contact's BPCP, the same Dp = Vp*t
+    // the hitter's own MBCRL adds to his wingspan — with no wingspan of its own: it says where he can get
+    // to, not what he can reach once he is there. Dashed like the reach curve, in the team colour.
+    if (fwd && hitter && hitter.p !== p){
+      const R = travelBy(hitter.hit.dball);            // metres, Vp * (dball / Vball)
+      if (R > 1e-6){
+        ctx.save();
+        ctx.setLineDash([DASH_ON/s, DASH_OFF/s]);
+        ctx.lineWidth = DASH_W/s;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, R, 0, 2*Math.PI);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    // ball mode: the MBCRL, from his centre out to the MBCRP. Its BPCP is the point that levels with
+    // him, so the line runs along his own reach line, parallel to the net, with a length of
+    // Dp + STATIC_REACH — the reach the flight has bought him by the time the ball is level with him.
+    // The static wingspan part is already solid above; the footwork beyond it — and the MBCRP dot —
+    // read at 0.5 in the team colour, the dot shaped like the expected contact point (team fill, white
+    // rim). That dot is the point the contact falls back to when the path never comes inside his reach
+    // (mbcrContact), so plan and reach always agree there; it is dropped only when the ball leaves the
+    // screen before it levels with him, because then there is no BPCP to name.
+    if (curve && curve.lv && curve.lv.dball <= curve.exit + 1e-9){
+      const lv = curve.lv, L = mbcrLen(lv.dball);          // metres from his centre, Dp + STATIC_REACH
+      const sgn = lv.x >= p.x ? 1 : -1;                    // the side the ball is on, from the geometry
+      const ex = p.x + sgn*L, ey = p.y;                    // levelled BPCP -> levelled line
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      line(p.x, p.y, ex, ey);
+      ctx.beginPath(); ctx.arc(ex, ey, 4/s, 0, 7);
+      ctx.fillStyle = col; ctx.fill();
+      ctx.lineWidth = 2/s; ctx.strokeStyle = '#fff'; ctx.stroke();
       ctx.restore();
     }
 
@@ -1052,8 +1221,9 @@ function status(){
   const atk = attackTeam(), def = atk === 'A' ? 'B' : 'A';
   if (ball.on){
     const h = ballHitter();
-    const who = h ? ' Player ' + h.p.letter + ' meets it on the ' + (h.side < 0 ? 'left' : 'right') + ' side' +
-                    (h.clamped ? ' (the path runs past his reach, so contact is on the arc’s edge).' : '.')
+    const who = h ? ' Player ' + h.p.letter + (h.clamped
+                    ? ' cannot reach it — the path never comes inside his reach, so the plan is to stretch to the end of it.'
+                    : ' meets it on the ' + (h.side < 0 ? 'left' : 'right') + ' side.')
                   : ' No attacker has the ball in front of him yet.';
     document.getElementById('status').textContent =
       'Ball mode: the arrow points at ' + NAME[atk].toLowerCase() + ', so it attacks (beams); ' +
