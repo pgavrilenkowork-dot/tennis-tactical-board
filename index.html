@@ -77,7 +77,8 @@ const FH  = 'fh';    // forehand end dot: emits from the forehand side
 const BH  = 'bh';    // backhand end dot: emits from the backhand side
 const SEG = 'seg';   // reach line between the two end dots: drags only
 const BALL = 'ball'; // the tennis ball: drags only, never emits
-const VEC = 'vec';   // the ball's arrow: drags (aims / stretches) only, never emits
+const VEC = 'vec';   // the ball's arrow: drags (stretches -> speed) only, never emits
+const EXT = 'ext';   // the arrow's dashed continuation: drags (swings -> rotation) only, never emits
 // world-x of a player's forehand: facing the net, top team (A) = screen-left, bottom team (B) = screen-right
 const fhSide = p => p.team === 'A' ? -1 : 1;
 // Live reach settings, metres per side (the header sliders edit these). They are the defaults as well:
@@ -116,32 +117,41 @@ resetPlayers();
 //   "p-" marks a court fragment, then one <letter><x>:<y>[:<side>] per player, metres, 2 decimals.
 //   The optional side is L or R — his OWN left or right, facing the net — and names the end he
 //   emits from; a player without one emits nothing.
-//   The ball, while it is shown, adds one "b:" entry — its centre and its arrow's tip, metres, 2
-//   decimals — so the arrow travels with the link:
-//     index.html#p-A2.23:-3.50;B2.00:2.00:R;b:0.00:6.50:2.00:3.50
-//   "b:0.00;6.50;2.00;3.50" is accepted too. A tip-less "b:0.00:6.50" places the ball and leaves
-//   the arrow pointing the way it already does; a fragment with no "b:" entry hides the ball. The
-//   arrow's colour follows from the tip — which side of the net it points at, see arrowColor() — so a
-//   link restores that too. The ball's size and arrow width are on-screen settings, not part of the
-//   link.
+//   The ball, while it is shown, adds one "b-" entry — its centre, the ball's speed in km/h and the
+//   arrow's rotation in degrees — so the arrow travels with the link:
+//     index.html#p-A2.23:-3.50;B2.00:2.00:R;b-0.00:6.50:90.0:303.7
+//   ':' and ';' both work between those four numbers ("b-0.00;6.50;90.0;303.7"). Speed and rotation
+//   are scale-free, so a link no longer depends on how long the arrow happens to be drawn: the arrow
+//   is always 2 m of court per 50 km/h, at any zoom. The older tip form
+//   "b:0.00:6.50:2.00:3.50" is still read — its tip becomes a speed and a rotation on the way in —
+//   and a tip-less "b:0.00:6.50" places the ball and leaves the arrow pointing the way it already
+//   does. A fragment with no ball entry hides the ball. The arrow's colour follows from the rotation
+//   — which side of the net it points at, see arrowColor() — so a link restores that too. The ball's
+//   size and arrow width are on-screen settings, not part of the link.
 const HASH_TAG = 'p-';
-// the ball's entry, wherever it sits in the fragment: "b:" then centre x, y and arrow tip x, y.
-// Both ':' and ';' work between the four numbers, hence the mixed separator class.
-const BALL_RE = /(?:^|;)\s*b\s*:\s*(-?\d+(?:\.\d+)?)\s*[:;]\s*(-?\d+(?:\.\d+)?)\s*(?:[:;]\s*(-?\d+(?:\.\d+)?)\s*[:;]\s*(-?\d+(?:\.\d+)?)\s*)?(?=;|$)/i;
-const fmtCoord = v => (Math.abs(v) < 0.005 ? 0 : v).toFixed(2);   // 2 decimals, and never "-0.00"
+// the ball's entry, wherever it sits in the fragment: "b-" then centre x, y, speed (km/h) and
+// rotation (degrees). ':' and ';' both work between those four numbers, hence the mixed class.
+const BALL_RE = /(?:^|;)\s*b\s*-\s*(-?\d+(?:\.\d+)?)\s*[:;]\s*(-?\d+(?:\.\d+)?)\s*[:;]\s*(-?\d+(?:\.\d+)?)\s*[:;]\s*(-?\d+(?:\.\d+)?)\s*(?=;|$)/i;
+// the older tip form "b:x:y:tipx:tipy" (either separator, tip optional) is still read, so links made
+// before the arrow became speed + rotation keep working; arrowFromTip() converts the tip.
+const BALL_TIP_RE = /(?:^|;)\s*b\s*:\s*(-?\d+(?:\.\d+)?)\s*[:;]\s*(-?\d+(?:\.\d+)?)\s*(?:[:;]\s*(-?\d+(?:\.\d+)?)\s*[:;]\s*(-?\d+(?:\.\d+)?)\s*)?(?=;|$)/i;
+// numbers in the fragment: d decimals, and never "-0.00"
+const fmtNum = (v, d) => (Math.abs(v) < 0.5*Math.pow(10, -d) ? 0 : v).toFixed(d);
+const fmtCoord = v => fmtNum(v, 2);                                 // metres, 2 decimals
+const fmtVel = v => fmtNum(v, 1);                                   // km/h, 1 decimal
+const fmtRot = r => fmtNum(Math.round(normRot(r)*10)/10 % 360, 1);  // degrees, 0 .. 359.9
 const byLetter = L => players.find(p => p.letter === L);
 // A faces the net with his right hand to screen-left, B with his right hand to screen-right, so
 // fhSide() is exactly his right-hand side; his left is the mirror of it. Nothing lit = no suffix.
 const sideOf = p => p.l === p.r ? '' : ((p.l ? -1 : 1) === fhSide(p) ? 'R' : 'L');
 const entry = q => q.ball
-  ? 'b:' + fmtCoord(q.x) + ':' + fmtCoord(q.y)
-        + (q.hasTip === false ? '' : ':' + fmtCoord(q.x2) + ':' + fmtCoord(q.y2))
+  ? 'b-' + fmtCoord(q.x) + ':' + fmtCoord(q.y) + ':' + fmtVel(q.vel) + ':' + fmtRot(q.rot)
   : q.letter + fmtCoord(q.x) + ':' + fmtCoord(q.y) + (q.side ? ':' + q.side : '');
 // the ball always comes last, so a fragment that puts it first still compares equal after applying
 const canonical = list => HASH_TAG + list.slice()
   .sort((a, b) => (a.ball ? 1 : 0) - (b.ball ? 1 : 0)).map(entry).join(';');
 const hashOf = () => canonical(players.map(p => ({letter: p.letter, x: p.x, y: p.y, side: sideOf(p)}))
-  .concat(ball.on ? [{ball: true, x: ball.x, y: ball.y, x2: ball.ax, y2: ball.ay}] : []));
+  .concat(ball.on ? [{ball: true, x: ball.x, y: ball.y, vel: ball.vel, rot: ball.rot}] : []));
 function readHash(){
   let raw;
   try { raw = decodeURIComponent(location.hash.replace(/^#/, '')); } catch (e){ return []; }
@@ -150,9 +160,16 @@ function readHash(){
   const out = [];
   const bm = BALL_RE.exec(raw);                    // the ball entry is picked out first, so its "b"
   if (bm){                                         // can never be read as player B
-    out.push({ball: true, x: +bm[1], y: +bm[2],
-              hasTip: bm[3] != null, x2: bm[3] != null ? +bm[3] : 0, y2: bm[4] != null ? +bm[4] : 0});
+    out.push({ball: true, x: +bm[1], y: +bm[2], vel: +bm[3], rot: +bm[4]});
     raw = raw.replace(BALL_RE, ';');               // ...and taken out of the player list
+  } else {
+    const bt = BALL_TIP_RE.exec(raw);              // an older link still carries the arrow's tip
+    if (bt){
+      const x = +bt[1], y = +bt[2];
+      const r = bt[3] != null ? arrowFromTip(x, y, +bt[3], +bt[4]) : null;   // tip -> speed/rotation
+      out.push({ball: true, x, y, vel: r ? r.vel : ball.vel, rot: r ? r.rot : ball.rot});
+      raw = raw.replace(BALL_TIP_RE, ';');
+    }
   }
   for (const part of raw.split(';')){
     const m = /^\s*([A-Za-z])\s*(-?\d+(?:\.\d+)?)\s*:\s*(-?\d+(?:\.\d+)?)\s*(?::\s*([LRlr])\s*)?$/.exec(part);
@@ -178,11 +195,9 @@ function applyHash(){
     }
   }
   if (b){
-    const dx = b.x - ball.x, dy = b.y - ball.y;             // the arrow rides along with the ball
     ball.on = true;
     ball.x = b.x; ball.y = b.y;
-    if (b.hasTip){ ball.ax = b.x2; ball.ay = b.y2; }
-    else { ball.ax += dx; ball.ay += dy; }                  // no tip given: keep direction and length
+    ball.vel = clampVel(b.vel); ball.rot = normRot(b.rot);   // the arrow is speed + rotation
   } else {
     ball.on = false;
   }
@@ -311,17 +326,17 @@ const ballInFront = p => (ball.y - p.y) * frontSign(p) >= 0;
 // then too, see arrowColor).
 function attackTeam(){
   if (!ball.on) return attack;
-  const c = toPx(ball), t = toPx({x: ball.ax, y: ball.ay});
-  const dy = t.y - c.y;
+  const g = arrowGeom(), dy = g.uy*g.len;      // the direction as drawn, exactly like arrowColor()
   if (Math.abs(dy) < 1) return attack;
   return dy < 0 ? 'A' : 'B';
 }
 
 // The arrow as an imaginary ray: ball centre, unit direction. Hit detection, the side and the
 // expected hitting point are all measured along it, so they can never disagree with the drawn arrow.
+// It now comes straight from the stored rotation, so it is always defined (see the arrow's model).
 function ballRay(){
-  const dx = ball.ax - ball.x, dy = ball.ay - ball.y, d = Math.hypot(dx, dy);
-  return d < 1e-9 ? null : {x: ball.x, y: ball.y, ux: dx/d, uy: dy/d};
+  const a = ball.rot*DEG;
+  return {x: ball.x, y: ball.y, ux: Math.cos(a), uy: Math.sin(a)};
 }
 
 // Where p meets the ball on his own reach line: the horizontal line through his head, parallel to the
@@ -555,10 +570,34 @@ const BALL_PX = 11;                            // drawn radius, CSS px  ← the 
 const ball = {
   on: false,
   x: 0, y: 6.5,                               // starts on the centre line, behind the near service line
-  ax: 2.0, ay: 3.5,                           // arrow tip, metres: the arrow always starts at the centre
+  vel: 90,                                    // the ball's speed, km/h — it IS the arrow's length
+  rot: 303.7,                                 // the arrow's rotation, degrees (see the model below)
   px: BALL_PX,                                // drawn radius, CSS px (the header slider edits this)
   quat: [0.0698, 0.6742, -0.7349, 0.0210]     // the ball's default orientation
 };
+// ---- the arrow's model: speed + rotation, never a tip.  The arrow is drawn to a fixed scale —
+//      2 m of court is 50 km/h, i.e. 25 km/h per metre — so the same speed and angle mean the same
+//      thing at any zoom and the URL can carry them instead of a length in metres.
+//      Rotation is in degrees: 0 points along +x (screen right) and the angle grows clockwise on
+//      screen, because court y grows down; -90 (i.e. 270) aims at the top pair, +90 at the bottom.
+const DEG = Math.PI/180;
+const normRot = deg => ((deg % 360) + 360) % 360;          // into 0 .. 360
+const VEL_PER_M = 50/2;                                    // km/h per metre of arrow: 2 m = 50 km/h
+const BALL_VEL_MIN = 10, BALL_VEL_MAX = 400;               // km/h — the arrow stays inside this
+const clampVel = v => Math.max(BALL_VEL_MIN, Math.min(BALL_VEL_MAX, v));
+const arrowLenM = () => ball.vel / VEL_PER_M;              // the arrow's length, metres
+// the arrow's tip in world metres: always derived from the centre, so moving the ball carries the
+// arrow with it and stretching/swinging the arrow never touches the ball's position
+const arrowTipWorld = () => {
+  const a = ball.rot*DEG, L = arrowLenM();
+  return {x: ball.x + Math.cos(a)*L, y: ball.y + Math.sin(a)*L};
+};
+// a tip in world metres -> {vel, rot}: what an older "b:x:y:tipx:tipy" link still carries
+function arrowFromTip(x, y, tx, ty){
+  const dx = tx - x, dy = ty - y, d = Math.hypot(dx, dy);
+  if (d < 1e-9) return null;
+  return {vel: clampVel(d*VEL_PER_M), rot: normRot(Math.atan2(dy, dx)/DEG)};
+}
 const ballR = () => Math.max(BALL_R*s, ball.px);
 function drawBall(){
   if (!ball.on) return;
@@ -568,8 +607,9 @@ function drawBall(){
 
 // ---- the ball's arrow. It always starts at the ball's centre, but the first stretch is never drawn:
 //      a gap radius (always wider than the ball) swallows the tail, so the felt stays clean and the
-//      arrow reads as a direction sticking out of the ball. Drag it and the tip follows the pointer,
-//      so it can be aimed any way and stretched as long as the court allows, down to a minimum.
+//      arrow reads as a direction sticking out of the ball. Drag the arrow itself and it only changes
+//      the ball's speed (its length, see stretchArrow); swing it by dragging the dashed continuation
+//      past the tip (see rotateArrow), where the lever arm is as long as the grab is far away.
 const BALL_ARROW_W       = 4;     // shaft width, CSS px  ← the 4 px "Arrow width" setting
 const BALL_ARROW_GAP     = 8;     // clear space kept past the ball's edge, CSS px
 const BALL_ARROW_MIN     = 14;    // shortest VISIBLE arrow, gap edge -> tip, CSS px
@@ -585,16 +625,18 @@ let arrowW = BALL_ARROW_W;        // live shaft width (the header "Arrow width" 
 // pixel of level it is aimed at nobody and keeps the plain colour. Read at draw time, so turning the
 // arrow recolours it.
 function arrowColor(){
-  const c = toPx(ball), t = toPx({x: ball.ax, y: ball.ay}), dy = t.y - c.y;
+  const g = arrowGeom(), dy = g.uy*g.len;          // the arrow's whole drawn rise, CSS px
   if (Math.abs(dy) < 1) return BALL_ARROW_COLOR;
   return dy < 0 ? COL.B : COL.A;                 // up -> sent by the bottom pair, down -> by the top pair
 }
 
 // The arrow as it is drawn, all in CSS px: ball centre, unit direction (ux, uy), the gap it hides
 // behind, and the tail / tip / head it ends up with. Never shorter than BALL_ARROW_MIN past the gap.
+// The direction comes from ball.rot and the length from ball.vel at VEL_PER_M, so the shaft is a
+// physical reading of the ball's speed; only the pixel minimum below is a drawing convenience.
 function arrowGeom(){
   const c = toPx(ball), gap = ballR() + BALL_ARROW_GAP;
-  const t = toPx({x: ball.ax, y: ball.ay});
+  const t = toPx(arrowTipWorld());
   let dx = t.x - c.x, dy = t.y - c.y, d = Math.hypot(dx, dy);
   if (d < 1e-6){ dx = 1; dy = 0; d = 1; }                   // degenerate: aim along +x
   const len  = Math.max(d, gap + BALL_ARROW_MIN);            // minimal length, from the ball's centre
@@ -627,20 +669,22 @@ function edgeReach(x, y, ux, uy){
 
 // shaft + filled head, in pixel space above the court. The tail cap is flat ("butt"), so the gap
 // really is empty: the arrow begins exactly gap px past the ball's edge and never covers the ball.
+// Its length is the ball's speed (see VEL_PER_M), so it grows with the shot and shrinks with it.
 // Past the tip the same direction carries on as a thin, half-transparent dashed line in the arrow's
 // own colour (lightened, see brighten), right to the edge of the screen, so the shot line reads
-// across the whole court without competing with the arrow itself.
+// across the whole court without competing with the arrow itself. That dashed run is also the aiming
+// handle: it is long, so grabbing it far from the ball gives a long lever arm (see rotateArrow).
 function drawBallArrow(){
   if (!ball.on) return;
   const g = arrowGeom(), col = arrowColor();
-  const ext = edgeReach(g.tip.x, g.tip.y, g.ux, g.uy);   // tip -> screen edge, along the arrow
-  if (ext > 0.5){
+  const run = edgeReach(g.tip.x, g.tip.y, g.ux, g.uy);   // tip -> screen edge, along the arrow
+  if (run > 0.5){
     ctx.save();
     ctx.globalAlpha = 0.5;
     ctx.strokeStyle = brighten(col);                // same hue, half way to white: readable at 0.5
     ctx.lineWidth = DASH_W; ctx.lineCap = 'butt';   // exactly the reach circle's stroke, in CSS px
     ctx.setLineDash([DASH_ON, DASH_OFF]);
-    line(g.tip.x, g.tip.y, g.tip.x + g.ux*ext, g.tip.y + g.uy*ext);
+    line(g.tip.x, g.tip.y, g.tip.x + g.ux*run, g.tip.y + g.uy*run);
     ctx.restore();
   }
   const bx = g.tip.x - g.ux*g.head, by = g.tip.y - g.uy*g.head;   // centre of the head's base
@@ -655,17 +699,37 @@ function drawBallArrow(){
   ctx.lineTo(bx - nx*g.hw, by - ny*g.hw);
   ctx.closePath(); ctx.fill();
   ctx.restore();
+
+  // the speed readout, by the arrow's end. The context is turned to the arrow's own angle, so the
+  // text's baseline runs along the trajectory and the number is read in the direction the ball is
+  // sent; it sits just off the head's flank, clear of the dashed run. Plain white, like the court
+  // markings — the arrow's own colour already says which team sends the ball.
+  ctx.save();
+  ctx.translate(g.tip.x, g.tip.y);
+  ctx.rotate(Math.atan2(g.uy, g.ux));
+  ctx.font = '700 12px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#fff';
+  const label = Math.round(ball.vel) + ' km/h';
+  ctx.fillText(label, 6, -(g.hw + 9));               // across the shaft, on the arrow's left flank
+  ctx.restore();
 }
 
-// drag the arrow: the tip follows the pointer, swung around the ball's centre, and never comes closer
-// than the gap plus the minimum length — so it can be aimed any way and stretched without being lost
-function aimArrow(px, py){
-  const c = toPx(ball), min = ballR() + BALL_ARROW_GAP + BALL_ARROW_MIN;
-  let vx = px - c.x, vy = py - c.y, d = Math.hypot(vx, vy);
-  if (d < 1e-6){ vx = ball.ax - ball.x; vy = ball.ay - ball.y; d = Math.hypot(vx, vy) || 1; }
-  const k = Math.max(d, min)/d, w = toWorld(c.x + vx*k, c.y + vy*k);
-  ball.ax = Math.max(VB.x0, Math.min(VB.x1, w.x));
-  ball.ay = Math.max(VB.y0, Math.min(VB.y1, w.y));
+// drag the ARROW: it only changes the ball's speed — the direction belongs to the dashed extension
+// (see rotateArrow). The pointer's distance from the ball's centre is read against the speed it had
+// when the drag started, so grabbing the shaft anywhere never makes the head jump on the first move.
+function stretchArrow(px, py, vel0, dist0){
+  const c = toPx(ball), d = Math.hypot(px - c.x, py - c.y)/s;   // metres from the ball's centre
+  ball.vel = clampVel(vel0 + (d - dist0)*VEL_PER_M);
+}
+
+// drag the DASHED EXTENSION: the arrow is aimed at the pointer and keeps its speed, so only the
+// rotation changes. The rotation radius is how far from the ball the drag started — grabbing the
+// dashed line far out gives a long lever arm, which is what makes fine aiming possible.
+function rotateArrow(px, py){
+  const c = toPx(ball), dx = px - c.x, dy = py - c.y;
+  if (Math.hypot(dx, dy) < 1e-6) return;
+  ball.rot = normRot(Math.atan2(dy, dx)/DEG);
 }
 
 
@@ -886,15 +950,23 @@ function segDist(px, py, ax, ay, bx, by){
   return Math.hypot(px - (ax + vx*t), py - (ay + vy*t));
 }
 function pick(px,py){
+  let extHit = null;              // the dashed run is picked last: it crosses the whole screen, so the
+                                  // ball, its arrow and the players all get first claim on a grab
   // the ball is drawn above everything, so it also wins the pick; a generous pad keeps it grabbable
   if (ball.on){
     const c = toPx(ball);
     if (Math.hypot(px - c.x, py - c.y) <= ballR() + 6) return {p: ball, part: BALL};
     // then the arrow (drawn above the players, and only where it is actually visible): grab its
-    // shaft or its head, never the empty gap behind them
+    // shaft or its head, never the empty gap behind them. This handle changes the speed only.
     const g = arrowGeom();
     if (segDist(px, py, g.tail.x, g.tail.y, g.tip.x, g.tip.y) <= Math.max(7, arrowW/2 + 5))
       return {p: ball, part: VEC};
+    // then the dashed continuation past the tip: a wide, easy handle for aiming, since it runs to the
+    // edge of the screen — the farther from the ball it is grabbed, the finer the rotation it gives
+    const run = edgeReach(g.tip.x, g.tip.y, g.ux, g.uy);
+    if (run > 0.5 && segDist(px, py, g.tip.x, g.tip.y,
+                             g.tip.x + g.ux*run, g.tip.y + g.uy*run) <= 8)
+      extHit = {p: ball, part: EXT};
   }
   let best = null, bd = 1e9;
   for (const p of players){
@@ -912,13 +984,17 @@ function pick(px,py){
     const [score, part] = cands.reduce((m, c2) => c2[0] < m[0] ? c2 : m);
     if (score < bd && score < 1e8){ bd = score; best = {p, part}; }
   }
-  return best;
+  return best || extHit;
 }
 cv.addEventListener('pointerdown', e => {
   const r = cv.getBoundingClientRect(), px = e.clientX-r.left, py = e.clientY-r.top;
   const hit = pick(px,py); if (!hit) return;
   const w = toWorld(px,py);
   drag = {p: hit.p, part: hit.part, dx: hit.p.x-w.x, dy: hit.p.y-w.y, sx: px, sy: py, moved: false};
+  if (hit.part === VEC){          // stretching reads the pointer against where it was grabbed, so the
+    const c = toPx(ball);         // head never jumps on the first move
+    drag.vel0 = ball.vel; drag.dist0 = Math.hypot(px - c.x, py - c.y)/s;
+  }
   cv.setPointerCapture(e.pointerId); cv.classList.add('drag'); e.preventDefault();
   draw();            // show the DOT guide immediately, even before the first move
 });
@@ -927,23 +1003,23 @@ cv.addEventListener('pointermove', e => {
   const r = cv.getBoundingClientRect(), px = e.clientX-r.left, py = e.clientY-r.top;
   if (Math.hypot(px-drag.sx,py-drag.sy) > 6) drag.moved = true;
   if (drag.part === VEC){
-    aimArrow(px, py);             // the tip follows the pointer, swung around the ball's centre
+    stretchArrow(px, py, drag.vel0, drag.dist0);   // the arrow only changes the speed, never the angle
+  } else if (drag.part === EXT){
+    rotateArrow(px, py);                           // the dashed run only swings it, never the speed
   } else {
     const w = toWorld(px,py);
     const x = Math.max(VB.x0, Math.min(VB.x1, w.x+drag.dx));
     const y = Math.max(VB.y0, Math.min(VB.y1, w.y+drag.dy));
-    if (drag.part === BALL){      // the arrow travels with its ball, keeping direction and length
-      ball.ax += x - ball.x; ball.ay += y - ball.y;
-    }
-    drag.p.x = x; drag.p.y = y;
+    drag.p.x = x; drag.p.y = y;    // the arrow is stored relative to the ball, so it rides along
   }
   draw();
   scheduleHash();                 // keep the URL in step while the player is being moved
 });
 function end(){
   if (!drag) return;
-  if (!drag.moved && drag.part !== BALL && drag.part !== VEC){   // the ball and its arrow only ever
-    const p = drag.p;                                          // move: a tap on either does nothing
+  if (!drag.moved && drag.part !== BALL && drag.part !== VEC && drag.part !== EXT){
+    const p = drag.p;       // the ball, its speed handle and its aiming handle only ever drag: a tap
+                            // on any of them does nothing
     if (!ball.on){                            // ball mode owns the roles and the hitting side itself
       if (p.team !== attackTeam()){
         if (drag.part === DOT) swapRoles();   // placeholder tap: the defender attacks (no beam lit)
@@ -982,7 +1058,8 @@ function status(){
     document.getElementById('status').textContent =
       'Ball mode: the arrow points at ' + NAME[atk].toLowerCase() + ', so it attacks (beams); ' +
       NAME[def].toLowerCase() + ' defends (shadows).' + who +
-      ' Drag the ball or its arrow — the attacking team, hitter and side follow automatically.';
+      ' Drag the ball to move it, the arrow to change the ball’s speed, and the dashed line past its ' +
+      'tip to aim it — the farther out you grab, the finer the aim.';
     return;
   }
   document.getElementById('status').textContent =
