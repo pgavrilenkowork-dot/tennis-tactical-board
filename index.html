@@ -67,6 +67,10 @@ const ARROW_LEN = 20;      // ARROW: overall length, tail -> tip (px)
 const ARROW_HEAD_L = 9;    // ARROW: head length along the shaft (px)
 const ARROW_HEAD_HW = 2.6; // ARROW: head half-width (px); 9 long x 2.6 half ≈ 32° apex, CAD-sharp
 const SHADOW_COL = "#000";
+// The dashed defensive reach circle's stroke, in CSS px: 2 px wide, 9 px dashes with 7 px gaps. The
+// ball arrow's continuation wears exactly the same stroke, so the two dashed guides read as one
+// family. Court-space drawing divides these by s to land on pixels; pixel-space drawing uses them as is.
+const DASH_W = 2, DASH_ON = 9, DASH_OFF = 7;
 // Short names for a player's clickable objects, shared by pick() and end()
 const DOT = 'dot';   // lettered placeholder (head dot): drags only, never emits
 const FH  = 'fh';    // forehand end dot: emits from the forehand side
@@ -80,7 +84,7 @@ const fhSide = p => p.team === 'A' ? -1 : 1;
 // the slider specs below take their min/max/step, position and readout from them, so a number is never
 // written twice (the HTML carries nothing but the ids).
 //   rNet    — "Dynamic Volley Reach": a net defender's reach when his attacker is half a court away
-//   rBase   — "Reach per side (groundstroke)": the wide zone on the defender's own baseline
+//   rBase   — "Reach per side (groundstroke)": the wide zone when the attacker is a full court length away
 //   rMargin — "Fast balls reach margin per side": the negative fraction (e.g. -0.15) taken off each side
 //             of that wide reach for the darker fast ball shadow, so it is never a setting of its own
 let rNet = 1.5, rBase = 4, rMargin = -0.30, attack = 'A';
@@ -205,7 +209,7 @@ window.addEventListener('hashchange', () => {
   if (drag) return;          // mid-drag the pointer owns the position and our own writes are stale
   const pos = readHash();
   if (!pos.length || canonical(pos) === hashOf()) return;
-  if (applyHash()) draw();
+  if (applyHash()){ status(); draw(); }
 });
 
 // ---- defender reach
@@ -229,46 +233,156 @@ const headDist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 // farther back than his own baseline pushes it past the setting.
 const volleyReach = d => STATIC_REACH + (rNet - STATIC_REACH) * (d / (CL/2));
 
-// How far a defender stands past the edge of the net zone: 0 on that edge, 1 on his own baseline, and
-// held at 1 behind it, so a defender camped behind the baseline keeps the plain baseline reach.
-const pastNetZone = y =>
-  Math.max(0, Math.min(1, (Math.abs(y) - NET_MODE_Y) / (CL/2 - NET_MODE_Y)));
+// How far along the line from the attacker to the defender the defender has to travel before the wide
+// groundstroke zone reaches rBase. Its other end has not moved: t = 0 is still the net-mode edge, where
+// the zone is exactly the net defender's volley reach. So t = 0 when the defender stands on that edge
+// and t = 1 when the true attacker-to-defender distance is a full court length CL (held at 1 beyond).
+// Both the edge crossing and the distance are true distances along the line connecting the two players,
+// never the defender's own baseline and never a projection of it.
+function reachRamp(src, q, d){
+  if (d >= CL) return 1;                     // a full court length away (or more): exactly rBase
+  const dy = q.y - src.y;
+  let s = 0;                                 // level line: no edge crossing, measure from the attacker
+  if (Math.abs(dy) > 1e-9){
+    s = ((q.y > 0 ? 1 : -1) * NET_MODE_Y - src.y) * d / dy;   // attacker -> edge on the defender's side
+    s = Math.max(0, Math.min(d, s));         // edge behind the attacker or past the defender: clamp
+  }
+  return Math.max(0, Math.min(1, (d - s) / (CL - s)));
+}
 
-// A groundstroker's wide reach per side, metres. On the edge of the net zone it is exactly the net
-// defender's volley reach, so the zone does not jump when he steps out of net mode; from there it
-// opens to exactly rBase as he retreats to his own baseline. Both ends follow the attacker: the near
-// end is the volley reach at his own distance.
-const groundReach = (d, y) => {
+// A groundstroker's wide reach per side, metres: the volley reach at the net-mode edge, opening to
+// exactly rBase when the attacker is a full court length away, walking along the line between the two
+// players (see reachRamp). The attacker's point src is what the distance is measured from.
+const groundReach = (src, q) => {
+  const d = headDist(src, q);
   const edge = volleyReach(d);
-  return edge + (rBase - edge) * pastNetZone(y);
+  return edge + (rBase - edge) * reachRamp(src, q, d);
 };
 
 // One source lights at a time — a tap clears every other dot first — so there is a single attacker:
 // the player whose forehand/backhand dot is on, and he alone sizes a defender. His partner never
 // does. Before any dot is tapped nobody is attacking yet, so the nearest attacker stands in for him.
+// In ball mode nobody taps at all: the arrow picks the attacking team and the ball's own path picks
+// the hitter, his side and the point he hits from (see ballHitter below).
 const isEmitting = p => p.l || p.r;
-const attacker = () => players.find(p => p.team === attack && isEmitting(p)) || null;
-function attackerDist(q){
-  const p = attacker();
-  if (p) return headDist(p, q);
-  let d = Infinity;
-  for (const a of players) if (a.team === attack) d = Math.min(d, headDist(a, q));
-  return d;               // a team always fields two players, so d stays finite
+function attacker(){
+  if (ball.on){ const h = ballHitter(); return h ? h.p : null; }
+  return players.find(p => p.team === attack && isEmitting(p)) || null;
 }
+function nearestAttacker(q){
+  let best = null, bd = Infinity;
+  for (const a of players) if (a.team === attackTeam()){
+    const d = headDist(a, q);
+    if (d < bd){ bd = d; best = a; }
+  }
+  return best;               // a team always fields two players, so this stays non-null
+}
+// The point a defender's shadow is measured from: the attacker who is actually hitting, or — before any
+// dot is tapped — his nearest teammate. In ball mode that is the hitter the arrow points at (attacker()
+// asks ballHitter), so the line, the shadow and the hitting point all use one source.
+const defenderSource = q => attacker() || nearestAttacker(q);
 // in net mode a defender has a single zone, the volley reach. Outside it his wide groundstroke zone
-// runs from that same volley reach at the net-zone edge to rBase on his baseline, and his fast ball
-// zone is simply that width cut by the margin: no interpolation of its own, so the dark shadow stays
-// exactly the same percentage narrower than the wide one wherever he stands.
-const defenderReach = q => inNetMode(q) ? volleyReach(attackerDist(q))
-                                       : groundReach(attackerDist(q), q.y);
+// runs from that same volley reach on the net-mode edge to rBase when the attacker is a full court
+// length away along the line between the two players (see reachRamp), and his fast ball zone is simply
+// that width cut by the margin: no interpolation of its own, so the dark shadow stays exactly the same
+// percentage narrower than the wide one wherever he stands.
+const reachFromSource = (src, q) => inNetMode(q) ? volleyReach(headDist(src, q)) : groundReach(src, q);
+const defenderReach = q => reachFromSource(defenderSource(q), q);
+// A ball-mode player's arc uses the very same defensive reach rules, with the incoming ball standing
+// in for the attacker: the arc tightens as the ball closes in and opens out to the groundstroke reach
+// while the ball is still a full court length away. It is the "lighter shadow" width, so no
+// fast-ball margin here.
+const arcReach = p => Math.max(0, reachFromSource(ball, p));
 // The margin is taken off each side of the wide reach, so -0.15 leaves 85% of it on the forehand side
 // and 85% on the backhand side — the dark shadow's whole width is 85% of the wide one, and shortening
 // the reach by a percentage rather than a fixed number of metres keeps that ratio wherever he stands.
 const fastReach = q => { const r = defenderReach(q); return r + r * rMargin; };
 
-// an attacker always has a fixed 2 m total reach (1 m per side), wherever he stands
-const ATTACK_REACH = 1;
-const reachOf = p => p.team === attack ? ATTACK_REACH : defenderReach(p);
+// an attacker always has the fixed static wingspan per side, wherever he stands
+const reachOf = p => p.team === attackTeam() ? STATIC_REACH : defenderReach(p);
+
+// ---- ball mode: the arrow decides the scene. It points at the team that receives the ball, i.e. the
+//      team about to attack; the other team defends. No tap can override either role.
+const frontSign = p => p.team === 'A' ? 1 : -1;   // +1: the top team faces down-court, -1: the bottom up
+const ballInFront = p => (ball.y - p.y) * frontSign(p) >= 0;
+
+// The team the arrow points at: up the screen -> the top team, down -> the bottom team. Within a
+// pixel of level the arrow names nobody, so the current roles stay put (the arrow is plain white
+// then too, see arrowColor).
+function attackTeam(){
+  if (!ball.on) return attack;
+  const c = toPx(ball), t = toPx({x: ball.ax, y: ball.ay});
+  const dy = t.y - c.y;
+  if (Math.abs(dy) < 1) return attack;
+  return dy < 0 ? 'A' : 'B';
+}
+
+// The arrow as an imaginary ray: ball centre, unit direction. Hit detection, the side and the
+// expected hitting point are all measured along it, so they can never disagree with the drawn arrow.
+function ballRay(){
+  const dx = ball.ax - ball.x, dy = ball.ay - ball.y, d = Math.hypot(dx, dy);
+  return d < 1e-9 ? null : {x: ball.x, y: ball.y, ux: dx/d, uy: dy/d};
+}
+
+// Where p meets the ball on his own reach line: the horizontal line through his head, parallel to the
+// net, the line the beams have always started from. It is where the arrow's ray crosses that line,
+// held at the arc's edge when the crossing is beyond his reach, so the contact never leaves the dashed
+// arc. A level arrow (or a crossing behind the ball) names no point on the line, so the arc's edge on
+// the ball's side stands in for it.
+function lineContact(p, ray, R){
+  const sgn = ball.x < p.x ? -1 : 1;
+  if (Math.abs(ray.uy) > 1e-9){
+    const t = (p.y - ray.y) / ray.uy;
+    if (t >= 0){
+      const x = ray.x + ray.ux*t;
+      return {x: Math.max(p.x - R, Math.min(p.x + R, x)), y: p.y, clamped: Math.abs(x - p.x) > R};
+    }
+  }
+  return {x: p.x + sgn*R, y: p.y, clamped: true};
+}
+
+// Which player of the attacking team meets the ball, on which side, and where he is expected to hit.
+// The arrow's ray is cut by each player's front arc and the player whose arc the ray reaches wins (a
+// trajectory that misses every arc still picks the arc nearest to it, so beams, shadows and contact dot
+// never vanish just because the arrow is off the arcs). The contact point itself stays on his reach
+// line, parallel to the net, clamped to the arc by lineContact; beams start there and the reach line is
+// extended to it (see drawPlayers).
+function ballHitter(){
+  if (!ball.on) return null;
+  const ray = ballRay();
+  if (!ray) return null;
+  const team = attackTeam();
+  let best = null;
+  for (const p of players){
+    if (p.team !== team || !ballInFront(p)) continue;   // behind the player: no arc, no hit
+    const R = arcReach(p);
+    const ox = ray.x - p.x, oy = ray.y - p.y;
+    const c = ox*ox + oy*oy - R*R;
+    let crossing = c <= 0;              // the ball is already inside the arc
+    if (!crossing){
+      const b = ox*ray.ux + oy*ray.uy;
+      const disc = b*b - c;
+      if (disc >= 0){
+        const rt = Math.sqrt(disc);
+        for (const t of [-b - rt, -b + rt]){
+          if (t < 0) continue;                            // only forward along the arrow
+          if ((ray.y + ray.uy*t - p.y) * frontSign(p) < 0) continue;   // front half only
+          crossing = true; break;
+        }
+      }
+    }
+    // a trajectory outside this arc still makes him a contender: the gap between his arc and the
+    // trajectory decides who is closest, so the beams keep showing even when the arrow misses both
+    const miss = crossing ? 0 : Math.max(0, Math.abs(ox*ray.uy - oy*ray.ux) - R);
+    const better = !best || miss < best.miss - 1e-9 ||
+                   (Math.abs(miss - best.miss) <= 1e-9 && Math.abs(p.y) < Math.abs(best.p.y));
+    if (better) best = {p, R, miss};
+  }
+  if (!best) return null;
+  const p = best.p, hit = lineContact(p, ray, best.R);
+  return {...best, hit, clamped: hit.clamped,
+          side: Math.abs(hit.x - p.x) < 1e-9 ? (ball.x < p.x ? -1 : 1) : (hit.x < p.x ? -1 : 1)};
+}
 
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 let cw = 0, ch = 0, dpr = 1, s = 1, ox = 0, oy = 0;
@@ -492,11 +606,43 @@ function arrowGeom(){
           tip:  {x: c.x + ux*len, y: c.y + uy*len}};
 }
 
+// The dashed continuation wears the arrow's own colour, lightened halfway to white: at half opacity
+// the plain team colour reads too dim over the court, and a lightened version keeps the team's hue
+// while staying visible all the way to the screen edge.
+function brighten(hex){
+  const n = parseInt(hex.slice(1), 16), mix = v => Math.round(v + (255 - v)*0.5);
+  return 'rgb(' + mix((n >> 16) & 255) + ',' + mix((n >> 8) & 255) + ',' + mix(n & 255) + ')';
+}
+
+// How far a pixel-space ray from (x, y) along (ux, uy) runs before it leaves the canvas: the dashed
+// extension of the arrow stops exactly at the edge of the screen, wherever it is aimed.
+function edgeReach(x, y, ux, uy){
+  let t = Infinity;
+  if (ux >  1e-9) t = Math.min(t, (cw - x)/ux);
+  if (ux < -1e-9) t = Math.min(t, (0  - x)/ux);
+  if (uy >  1e-9) t = Math.min(t, (ch - y)/uy);
+  if (uy < -1e-9) t = Math.min(t, (0  - y)/uy);
+  return t;
+}
+
 // shaft + filled head, in pixel space above the court. The tail cap is flat ("butt"), so the gap
 // really is empty: the arrow begins exactly gap px past the ball's edge and never covers the ball.
+// Past the tip the same direction carries on as a thin, half-transparent dashed line in the arrow's
+// own colour (lightened, see brighten), right to the edge of the screen, so the shot line reads
+// across the whole court without competing with the arrow itself.
 function drawBallArrow(){
   if (!ball.on) return;
   const g = arrowGeom(), col = arrowColor();
+  const ext = edgeReach(g.tip.x, g.tip.y, g.ux, g.uy);   // tip -> screen edge, along the arrow
+  if (ext > 0.5){
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.strokeStyle = brighten(col);                // same hue, half way to white: readable at 0.5
+    ctx.lineWidth = DASH_W; ctx.lineCap = 'butt';   // exactly the reach circle's stroke, in CSS px
+    ctx.setLineDash([DASH_ON, DASH_OFF]);
+    line(g.tip.x, g.tip.y, g.tip.x + g.ux*ext, g.tip.y + g.uy*ext);
+    ctx.restore();
+  }
   const bx = g.tip.x - g.ux*g.head, by = g.tip.y - g.uy*g.head;   // centre of the head's base
   const nx = -g.uy, ny = g.ux;                                    // across the shaft
   ctx.save();
@@ -545,35 +691,43 @@ function drawNet(){
 
 // A beam is only ever lit by the attacker who is hitting, and that attacker's head-dot distance to a
 // defender sizes that defender's reach here — the very same distance the reach line and end dots use
-// (see attackerDist), so the shadow and the line can never disagree.
+// (see defenderSource), so the shadow and the line can never disagree. In ball mode there is still one
+// hitter and two beams, but his source is the expected hitting point, not an end dot.
 function drawBeams(){
   const T = 400;
   ctx.save();
   ctx.beginPath(); ctx.rect(VB.x0,VB.y0,VB.x1-VB.x0,VB.y1-VB.y0); ctx.clip();
-  const defenders = players.filter(q => q.team !== attack);
-  for (const p of players.filter(q => q.team === attack)){
-    const col = COL[p.team], rp = ATTACK_REACH;
-    for (const sx of [-1, 1]){
-      if (!(sx < 0 ? p.l : p.r)) continue;
-      const S = {x: p.x + sx*rp, y: p.y};
-      for (const q of defenders){
-        // net mode: one dark beam only; otherwise the wide (lighter) zone, then the fast ball (darker)
-        // one, cut from it by the margin. Both go through the same defenderReach/fastReach the reach
-        // line uses, so the line ends and the shadow edge beams can never drift apart.
-        const zones = inNetMode(q) ? [[defenderReach(q), 0.3]]
-                                   : [[defenderReach(q), 0.15], [fastReach(q), 0.3]];
-        for (const [rq, alpha] of zones){
-          const A = {x: q.x - rq, y: q.y}, B = {x: q.x + rq, y: q.y};
-          const dA = {x: A.x-S.x, y: A.y-S.y}, dB = {x: B.x-S.x, y: B.y-S.y};
-          if (Math.hypot(dA.x,dA.y) < 1e-6 || Math.hypot(dB.x,dB.y) < 1e-6) continue;
-          // lit part: source to defender
-          ctx.globalAlpha = 0.22; ctx.fillStyle = SHADOW_COL; //col;
-          ctx.beginPath(); ctx.moveTo(S.x,S.y); ctx.lineTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.closePath(); ctx.fill();
-          // shadow behind defender
-          ctx.globalAlpha = alpha; ctx.fillStyle = SHADOW_COL;
-          ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y);
-          ctx.lineTo(B.x+dB.x*T,B.y+dB.y*T); ctx.lineTo(A.x+dA.x*T,A.y+dA.y*T); ctx.closePath(); ctx.fill();
-        }
+  const atk = attackTeam();
+  const defenders = players.filter(q => q.team !== atk);
+  // one beam per defender: source to that defender's reach zone, then the shadow behind him
+  const cast = (S, q) => {
+    // net mode: one dark beam only; otherwise the wide (lighter) zone, then the fast ball (darker)
+    // one, cut from it by the margin. Both go through the same defenderReach/fastReach the reach
+    // line uses, so the line ends and the shadow edge beams can never drift apart.
+    const zones = inNetMode(q) ? [[defenderReach(q), 0.3]]
+                               : [[defenderReach(q), 0.15], [fastReach(q), 0.3]];
+    for (const [rq, alpha] of zones){
+      const A = {x: q.x - rq, y: q.y}, B = {x: q.x + rq, y: q.y};
+      const dA = {x: A.x-S.x, y: A.y-S.y}, dB = {x: B.x-S.x, y: B.y-S.y};
+      if (Math.hypot(dA.x,dA.y) < 1e-6 || Math.hypot(dB.x,dB.y) < 1e-6) continue;
+      // lit part: source to defender
+      ctx.globalAlpha = 0.22; ctx.fillStyle = SHADOW_COL; //col;
+      ctx.beginPath(); ctx.moveTo(S.x,S.y); ctx.lineTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.closePath(); ctx.fill();
+      // shadow behind defender
+      ctx.globalAlpha = alpha; ctx.fillStyle = SHADOW_COL;
+      ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y);
+      ctx.lineTo(B.x+dB.x*T,B.y+dB.y*T); ctx.lineTo(A.x+dA.x*T,A.y+dA.y*T); ctx.closePath(); ctx.fill();
+    }
+  };
+  if (ball.on){
+    const h = ballHitter();
+    if (h) for (const q of defenders) cast(h.hit, q);   // one source, exactly two beams
+  } else {
+    for (const p of players.filter(q => q.team === atk)){
+      for (const sx of [-1, 1]){
+        if (!(sx < 0 ? p.l : p.r)) continue;
+        const S = {x: p.x + sx*STATIC_REACH, y: p.y};
+        for (const q of defenders) cast(S, q);
       }
     }
   }
@@ -581,25 +735,69 @@ function drawBeams(){
 }
 
 function drawPlayers(){
+  const atk = attackTeam(), hitter = ball.on ? ballHitter() : null;
   for (const p of players){
-    const col = COL[p.team], att = p.team === attack, r = reachOf(p);
+    const col = COL[p.team], att = p.team === atk, r = reachOf(p);
     ctx.strokeStyle = col; ctx.lineCap = 'round';
     ctx.lineWidth = 3.5/s;
+    // In ball mode nothing may reach past the dashed arc, so when a net player's arc is narrower than
+    // his fixed wingspan the reach line — and its end dots — are shortened to the arc. Otherwise it is
+    // the full STATIC_WINGSPAN/2.
+    const arc = ball.on && att && ballInFront(p) ? arcReach(p) : 0;
+    const half = arc ? Math.min(r, arc) : r;
     // a defender outside net mode: half-transparent line over the whole (wide, lighter-shadow) reach,
     // opaque over the fast ball (darker-shadow) reach, which is that same wide reach cut by the margin.
-    // In net mode the reach is a single dark zone, so the line is drawn solid all the way — same as an
-    // attacker's, no dashes. Every reach here comes from reachOf/defenderReach/fastReach, i.e. from the
-    // attacker who is actually hitting and from the identical numbers the shadow edges use.
+    // In net mode the reach is a single dark zone, so the line is drawn solid all the way. Every reach
+    // here comes from reachOf/defenderReach/fastReach, i.e. from the attacker who is actually hitting
+    // and from the identical numbers the shadow edges use. In ball mode an attacker's line is the
+    // wingspan one (clipped to his arc above), solid, with small defensive-style end dots (see below).
     const twoZones = !att && !inNetMode(p);
     if (twoZones) ctx.globalAlpha = 0.5;
-    line(p.x-r,p.y,p.x+r,p.y);
+    line(p.x-half,p.y,p.x+half,p.y);
     ctx.globalAlpha = 1;
     if (twoZones){ const rn = fastReach(p); line(p.x-rn,p.y,p.x+rn,p.y); }
-    for (const sx of [-r, r]){
-      const on = att && (sx < 0 ? p.l : p.r);
-      ctx.beginPath(); ctx.arc(p.x+sx,p.y,(att ? 7 : 4)/s,0,7);
+
+    // ball mode: the hitter's reach line is extended horizontally, parallel to the net (at 0.5
+    // opacity), from the end dot on the ball's side to the expected contact point. That point is held
+    // at the arc's edge, so the extension can never overshoot the arc, and it ends in the contact dot
+    // drawn just below.
+    if (hitter && hitter.p === p){
+      const sgn = hitter.hit.x >= p.x ? 1 : -1, from = p.x + sgn*half;
+      if ((hitter.hit.x - from)*sgn > 0){
+        ctx.save();
+        ctx.globalAlpha = 0.5;
+        line(from, p.y, hitter.hit.x, p.y);
+        ctx.restore();
+      }
+    }
+
+    // ball mode: a dashed half-circle arc in front of every attacking player. Its radius is the
+    // defensive reach (lighter shadow) at the ball's distance, so it opens and closes with the ball;
+    // a player with the ball behind him has no arc at all.
+    if (arc){
+      const down = frontSign(p) > 0;
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      ctx.setLineDash([DASH_ON/s, DASH_OFF/s]);
+      ctx.lineWidth = DASH_W/s;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, arc, down ? 0 : Math.PI, down ? Math.PI : Math.PI*2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    for (const sx of [-half, half]){
+      const on = att && !ball.on && (sx < 0 ? p.l : p.r);   // ball mode never lights a side
+      ctx.beginPath(); ctx.arc(p.x+sx,p.y,(att && !ball.on ? 7 : 4)/s,0,7);
       ctx.fillStyle = on ? col : '#1b2430'; ctx.fill();
       ctx.lineWidth = 2/s; ctx.strokeStyle = on ? '#fff' : col; ctx.stroke();
+    }
+    // ball mode: the expected contact point, the same small dot as the reach-line ends but filled with
+    // the team colour and rimmed in white. Beams start exactly here (see drawBeams).
+    if (hitter && hitter.p === p){
+      ctx.beginPath(); ctx.arc(hitter.hit.x, hitter.hit.y, 4/s, 0, 7);
+      ctx.fillStyle = col; ctx.fill();
+      ctx.lineWidth = 2/s; ctx.strokeStyle = '#fff'; ctx.stroke();
     }
     // white rim only on an attacker's team-coloured dot; a defender's dark dot sits straight on the
     // court inside its team-coloured ring (no white halo)
@@ -704,9 +902,11 @@ function pick(px,py){
     const c = toPx(p), d = Math.hypot(px-c.x, py-c.y);
     const a = toPx({x:p.x-r,y:p.y}), b = toPx({x:p.x+r,y:p.y});
     const fhDot = fh < 0 ? a : b, bhDot = fh < 0 ? b : a;
-    const att = p.team === attack;
-    const dFh = att ? Math.hypot(px-fhDot.x, py-fhDot.y) : 1e9;
-    const dBh = att ? Math.hypot(px-bhDot.x, py-bhDot.y) : 1e9;
+    const att = p.team === attackTeam();
+    // ball mode picks the side itself, so its end dots are placeholders: no FH/BH pick at all
+    const canSide = att && !ball.on;
+    const dFh = canSide ? Math.hypot(px-fhDot.x, py-fhDot.y) : 1e9;
+    const dBh = canSide ? Math.hypot(px-bhDot.x, py-bhDot.y) : 1e9;
     const dSeg = Math.abs(py-c.y) <= 16 && px >= a.x-12 && px <= b.x+12 ? Math.abs(py-c.y) + 16 : 1e9;
     const cands = [[d <= HEAD_PX+8 ? d : 1e9, DOT], [dFh <= 18 ? dFh : 1e9, FH], [dBh <= 18 ? dBh : 1e9, BH], [dSeg, SEG]];
     const [score, part] = cands.reduce((m, c2) => c2[0] < m[0] ? c2 : m);
@@ -744,14 +944,16 @@ function end(){
   if (!drag) return;
   if (!drag.moved && drag.part !== BALL && drag.part !== VEC){   // the ball and its arrow only ever
     const p = drag.p;                                          // move: a tap on either does nothing
-    if (p.team !== attack){
-      if (drag.part === DOT) swapRoles();     // placeholder tap: the defender attacks (no beam lit)
-    } else if (drag.part === FH || drag.part === BH){
-      // beams are emitted ONLY from the forehand/backhand dots: one side of one player at a time
-      const side = drag.part === FH ? fhSide(p) : -fhSide(p);   // -1 = screen-left, +1 = screen-right
-      const on = side < 0 ? !p.l : !p.r;
-      clearBeams();
-      if (side < 0) p.l = on; else p.r = on;
+    if (!ball.on){                            // ball mode owns the roles and the hitting side itself
+      if (p.team !== attackTeam()){
+        if (drag.part === DOT) swapRoles();   // placeholder tap: the defender attacks (no beam lit)
+      } else if (drag.part === FH || drag.part === BH){
+        // beams are emitted ONLY from the forehand/backhand dots: one side of one player at a time
+        const side = drag.part === FH ? fhSide(p) : -fhSide(p);   // -1 = screen-left, +1 = screen-right
+        const on = side < 0 ? !p.l : !p.r;
+        clearBeams();
+        if (side < 0) p.l = on; else p.r = on;
+      }
     }
     // DOT / SEG on an attacker: drag only, a tap here never emits
     status();
@@ -766,13 +968,25 @@ cv.addEventListener('pointercancel', end);
 function clearBeams(){ for (const q of players) q.l = q.r = false; }
 // roles swap with all beams off: a beam is only ever lit by tapping a forehand/backhand dot
 function swapRoles(){
+  if (ball.on) return;       // ball mode derives both roles from the arrow
   attack = attack === 'A' ? 'B' : 'A';
   clearBeams();
 }
 function status(){
-  const def = attack === 'A' ? 'B' : 'A';
+  const atk = attackTeam(), def = atk === 'A' ? 'B' : 'A';
+  if (ball.on){
+    const h = ballHitter();
+    const who = h ? ' Player ' + h.p.letter + ' meets it on the ' + (h.side < 0 ? 'left' : 'right') + ' side' +
+                    (h.clamped ? ' (the path runs past his reach, so contact is on the arc’s edge).' : '.')
+                  : ' No attacker has the ball in front of him yet.';
+    document.getElementById('status').textContent =
+      'Ball mode: the arrow points at ' + NAME[atk].toLowerCase() + ', so it attacks (beams); ' +
+      NAME[def].toLowerCase() + ' defends (shadows).' + who +
+      ' Drag the ball or its arrow — the attacking team, hitter and side follow automatically.';
+    return;
+  }
   document.getElementById('status').textContent =
-    NAME[attack] + ' attacks (beams), ' + NAME[def].toLowerCase() + ' defends (shadows). Tap an attacker’s forehand (FH) or backhand (BH) dot to emit from that side only (tap again to stop) — the lettered placeholder never emits; tap a defender’s placeholder to swap roles.';
+    NAME[atk] + ' attacks (beams), ' + NAME[def].toLowerCase() + ' defends (shadows). Tap an attacker’s forehand (FH) or backhand (BH) dot to emit from that side only (tap again to stop) — the lettered placeholder never emits; tap a defender’s placeholder to swap roles.';
 }
 // ---- reach sliders: REACH_SLIDERS owns the range, so the header needs no min/max/step/value and the
 // readout is written from the live setting. The initial position follows rNet/rBase/rMargin, which means
@@ -796,7 +1010,9 @@ syncReachUI();
 // arrow comes with it. The URL carries the ball, so toggling rewrites the fragment as well.
 const ballOn = document.getElementById('ballOn');
 ballOn.addEventListener('change', () => {
+  if (!ballOn.checked && ball.on) attack = attackTeam();   // keep the roles the ball scene was showing
   ball.on = ballOn.checked;
+  status();
   writeHash();                  // "b:" appears while the ball is shown, and goes when it is hidden
   draw();
 });
@@ -809,7 +1025,7 @@ ballSizev.textContent = ball.px + ' px';
 ballSize.addEventListener('input', () => {
   ball.px = +ballSize.value;
   ballSizev.textContent = ball.px + ' px';
-  if (!ball.on){ ball.on = true; ballOn.checked = true; writeHash(); }
+  if (!ball.on){ ball.on = true; ballOn.checked = true; writeHash(); status(); }
   draw();
 });
 // ---- arrow width slider: writes arrowW, the shaft width in CSS px (BALL_ARROW_W is its default).
@@ -820,7 +1036,7 @@ arrowWidthv.textContent = arrowW + ' px';
 arrowWidth.addEventListener('input', () => {
   arrowW = +arrowWidth.value;
   arrowWidthv.textContent = arrowW + ' px';
-  if (!ball.on){ ball.on = true; ballOn.checked = true; writeHash(); }
+  if (!ball.on){ ball.on = true; ballOn.checked = true; writeHash(); status(); }
   draw();
 });
 // a #p- link can show or hide the ball, so the header always mirrors the live ball state
@@ -838,8 +1054,8 @@ function setBarOpen(open){
 }
 barToggle.addEventListener('click', () => setBarOpen(bar.dataset.open !== 'true'));
 setBarOpen(false);      // start minimal; the court gets the whole screen until the bar is tapped
-status();
 applyHash();    // a shared #p- link restores the players before the first draw
+status();       // ...and the status line reflects whether that link also shows the ball
 resize();
 </script>
 </body>
