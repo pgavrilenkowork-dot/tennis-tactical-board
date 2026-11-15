@@ -21,12 +21,12 @@ header{position:fixed;top:env(safe-area-inset-top,0px);left:0;right:0;z-index:2;
 #tabs [role=tab]:hover{color:var(--ink)}
 #tabs [role=tab][aria-selected="true"]{color:var(--ink);border-bottom-color:#2e6fd0}
 #panel{display:flex;flex-direction:column;min-height:0}
-.tabpane{display:flex;flex-direction:column;gap:8px;padding-top:10px}
+.tabpane{display:flex;flex-direction:column;gap:8px;padding-top:22px}
 .tabpane[hidden]{display:none}
 #status{color:var(--muted)}
 /* The Game tab: the game on court, named at the top, and its help line behind a triangle — the help is
    long, and on a phone it would otherwise be the whole pane. */
-#gameHead{display:flex;align-items:center;gap:8px}
+#gameHead{display:flex;align-items:center;gap:23px}
 #gameName{margin:0;font-size:15px;font-weight:600;flex:1 1 auto;min-width:0;overflow:hidden;
   white-space:nowrap;text-overflow:ellipsis}
 #helpBtn{flex:0 0 auto;width:26px;height:26px;display:grid;place-items:center;padding:0;border:1px solid var(--line);
@@ -35,6 +35,18 @@ header{position:fixed;top:env(safe-area-inset-top,0px);left:0;right:0;z-index:2;
 #helpBtn svg{width:16px;height:16px;display:block;fill:none;stroke:currentColor;stroke-width:2;
   stroke-linecap:round;stroke-linejoin:round;transition:transform .15s}
 #helpBtn[aria-expanded="true"] svg{transform:rotate(90deg)}
+/* Ball mode's switch: the Game tab owns the one control that changes what the court shows, so it sits
+   in the head, after the name and before the help triangle. The markup stays the native switch —
+   <input type="checkbox" switch> — but Chromium does not render the attribute yet, so the track and
+   the thumb are drawn here: appearance:none turns the input into the track, ::before is the thumb. */
+#ballSwitch{flex:0 0 auto;flex-wrap:nowrap;gap:6px;font-size:15px;cursor:pointer}
+#ballSwitch input{flex:0 0 auto;margin:0;cursor:pointer}
+#ballOn{appearance:none;width:34px;height:20px;padding:0;border:0;border-radius:999px;background:var(--line);
+  position:relative;transition:background .15s}
+#ballOn::before{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
+  background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.35);transition:transform .15s}
+#ballOn:checked{background:#2e6fd0}
+#ballOn:checked::before{transform:translateX(14px)}
 label{display:flex;flex-wrap:wrap;align-items:center;gap:8px;color:var(--muted)}
 output{min-width:3em;color:var(--ink);text-align:right}
 input[type=range]{flex:1 1 120px;min-width:80px}
@@ -49,7 +61,7 @@ button:focus-visible,input:focus-visible{outline:2px solid #2e6fd0;outline-offse
   padding:2px 6px;cursor:pointer;touch-action:manipulation}
 .game::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--line);flex:0 0 auto}
 .game:hover{background:rgba(46,111,208,.08)}
-.game[data-active="true"]{background:rgba(46,111,208,.14);border-color:#2e6fd0}
+.game[data-active="true"]{background:rgba(46,111,208,.14);}
 .game[data-active="true"]::before{background:#2e6fd0}
 .gname{flex:1 1 auto;min-width:0;font:inherit;color:var(--ink);background:transparent;padding:6px 4px;
   text-align:left;border-radius:6px}
@@ -65,7 +77,7 @@ input.gname:focus{border-color:#2e6fd0;background:var(--bar);outline:none}
 .gdel{flex:0 0 auto;width:26px;height:26px;display:grid;place-items:center;padding:0;border:0;
   border-radius:6px;background:transparent;color:var(--muted);cursor:pointer}
 .gdel:hover{color:#c0392b;background:rgba(192,57,43,.12)}
-.gdel svg{width:14px;height:14px;display:block;fill:none;stroke:currentColor;stroke-width:2;
+.gdel svg{width:18px;height: 18px;px;display:block;fill:none;stroke:currentColor;stroke-width:2;
   stroke-linecap:round;stroke-linejoin:round}
 .hint{margin:0;color:var(--muted);font-size:12px}
 canvas{position:fixed;top:0;left:0;width:100vw;height:100vh;height:100dvh;touch-action:none;cursor:grab;display:block}
@@ -75,20 +87,25 @@ canvas.drag{cursor:grabbing}
 @media (max-width:700px){
   header{padding:8px 12px}
   #panel{max-height:calc(100vh - 118px);max-height:calc(100dvh - 118px);overflow:auto;overscroll-behavior:contain}
+  .tabpane{padding-top:10px}
 }
-/* Wide screens: a tab that has a pane becomes a column down the left side and the court moves to its
-   right. The Game tab has no panel yet — its pane is only the scene's line of help — so it keeps the
-   header as a strip across the top and the court keeps the full width. */
+/* Wide screens: every tab — the Game tab included — becomes a column down the left side and the court
+   moves to its right, so the game's name, its ball switch and its help line sit in the same panel as
+   the other tabs' contents instead of a strip across the top. */
 @media (min-width:701px){
-  header:not([data-tab="game"]){right:auto;bottom:0;width:var(--panel-w);border-right:1px solid var(--line);
+  header{right:auto;bottom:0;width:var(--panel-w);border-right:1px solid var(--line);
     border-bottom:0;overflow:auto;overscroll-behavior:contain}
-  header:not([data-tab="game"]) ~ main canvas{left:var(--panel-w);width:calc(100vw - var(--panel-w))}
+  header ~ main canvas{left:var(--panel-w);width:calc(100vw - var(--panel-w))}
   #tabs{position:sticky;top:0;z-index:1;background:var(--bar)}
+  /* The Game tab is a column like the others now, so its help line never needs the triangle: the
+     button goes and the help text stays on, whatever its hidden flag says on a narrow screen. */
+  #helpBtn{display:none}
+  #status[hidden]{display:block}
 }
 </style>
 </head>
 <body>
-<header data-tab="game">
+<header>
   <nav id="tabs" role="tablist" aria-label="Controls">
     <button type="button" role="tab" id="tabbtn-game" aria-selected="true" aria-controls="tab-game">Game</button>
     <button type="button" role="tab" id="tabbtn-games" aria-selected="false" aria-controls="tab-games">My Games</button>
@@ -98,6 +115,7 @@ canvas.drag{cursor:grabbing}
     <section class="tabpane" id="tab-game" role="tabpanel" aria-labelledby="tabbtn-game">
       <div id="gameHead">
         <h2 id="gameName">Game 1</h2>
+        <label id="ballSwitch">Ball mode: <input id="ballOn" type="checkbox" switch></label>
         <button id="helpBtn" type="button" aria-expanded="false" aria-controls="status"
                 aria-label="Help" title="Show help">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
@@ -114,7 +132,6 @@ canvas.drag{cursor:grabbing}
       <label>Dynamic Volley Reach <input id="rn" type="range"><output id="rnv"></output></label>
       <label>Reach per side (groundstroke) <input id="rb" type="range"><output id="rbv"></output></label>
       <label>Fast balls reach margin per side <input id="rm" type="range"><output id="rmv"></output></label>
-      <label>Show ball <input id="ballOn" type="checkbox"></label>
       <label>Display delta marker <input id="deltaOn" type="checkbox"></label>
       <label>Ball size <input id="ballSize" type="range" min="3" max="40" step="1"><output id="ballSizev"></output></label>
       <label>Arrow width <input id="arrowW" type="range" min="2" max="12" step="1"><output id="arrowWv"></output></label>
@@ -2093,8 +2110,9 @@ function syncReachUI(){
   }
 }
 syncReachUI();
-// ---- ball checkbox: show / hide the tennis ball; once shown it drags like a player does, and its
-// arrow comes with it. The URL carries the ball, so toggling rewrites the fragment as well.
+// ---- ball switch (Game tab head): "Ball mode:" and the switch that shows / hides the tennis ball;
+//      once shown it drags like a player does, and its arrow comes with it. The URL carries the ball,
+//      so toggling rewrites the fragment as well.
 const ballOn = document.getElementById('ballOn');
 ballOn.addEventListener('change', () => {
   if (!ballOn.checked && ball.on) attack = attackTeam();   // keep the roles the ball scene was showing
@@ -2152,12 +2170,10 @@ function syncSettingsUI(){
 // ---- tabs: one header, three panes. Game holds the scene's line of help, My Games the saved list,
 // Settings the controls. On narrow screens the pane stacks under the tabs from the top down; on wide
 // screens a pane becomes a column down the left (see the media query) and the court takes the rest.
-const bar = document.querySelector('header');
 const TABS = ['game', 'games', 'settings'];
 const tabBtn = t => document.getElementById('tabbtn-' + t);
 function setTab(name, focus){
   const tab = TABS.includes(name) ? name : 'game';
-  bar.dataset.tab = tab;
   for (const t of TABS){
     const on = t === tab, btn = tabBtn(t);
     btn.setAttribute('aria-selected', String(on));
