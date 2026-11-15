@@ -48,6 +48,7 @@ canvas.drag{cursor:grabbing}
     <label>Reach per side (groundstroke) <input id="rb" type="range"><output id="rbv"></output></label>
     <label>Fast balls reach margin per side <input id="rm" type="range"><output id="rmv"></output></label>
     <label>Show ball <input id="ballOn" type="checkbox"></label>
+    <label>Display delta marker <input id="deltaOn" type="checkbox"></label>
     <label>Ball size <input id="ballSize" type="range" min="3" max="40" step="1"><output id="ballSizev"></output></label>
     <label>Arrow width <input id="arrowW" type="range" min="2" max="12" step="1"><output id="arrowWv"></output></label>
   </div>
@@ -59,7 +60,20 @@ const CW = 10.97, CL = 23.77, SINGLES = 8.23, SERVICE = 6.40, POST = CW/2 + 0.91
 const MX = 2.5, MY = 3;
 let VB = {x0:-10,y0:-15,x1:10,y1:15};     // visible world rectangle; origin = centre of net, y down
 const COL = { A: '#ffb020', B: '#ff5fa2' };
-const UNREACH_COL = '#ff3b30';   // red: the ball's path never enters that attacker's MBCR reach
+const UNREACH_COL = '#ff3b30';   // red: the flight cannot be met at all (VBCRL-U) — the whole pair wears it
+const SRCL_GREY = '#8a95a3';      // ball mode's AHS SRCL: grey, opaque, team colour nowhere. It is the reach
+                                 // he keeps rather than one he plays from, so it does not wear his colours; and
+                                 // it is a whole line, not a faded one, because nothing else is said about the
+                                 // SRCP — no mark sits on it any more (see the SRCP pass below).
+const LINE_W = 3.5;              // px, the stroke width of every reach line: the SRCL and the BCRL/VBCRL. One
+                                 // number, so a line that is drawn over another is exactly as thick as it, and
+                                 // the two can never drift apart.
+// NAPRZ — the non-attacking player's reaching zone: the court under his MRA circle is shaded, not outlined.
+// NAPRZ_ALPHA is the one knob for both shades (0 = invisible zone, 1 = opaque paint); the red is the pair's
+// red and appears only when no contact exists at all (VBCRL-U, see noContact).
+const NAPRZ_ALPHA = 0.1;
+const NAPRZ_SHADE = 'rgba(0,0,0,' + NAPRZ_ALPHA + ')';
+const NAPRZ_SHADE_RED = 'rgba(255,59,48,' + NAPRZ_ALPHA + ')';
 const NAME = { A: 'Top team', B: 'Bottom team' };
 const HEAD_PX = 11;
 const DOT_GAP = 12;   // GUIDE LINE: clear space (px) kept at each end of the dashed line
@@ -67,11 +81,14 @@ const ARROW_GAP = 10;      // ARROW: clear space (px) between the GUIDE LINE and
 const ARROW_LEN = 20;      // ARROW: overall length, tail -> tip (px)
 const ARROW_HEAD_L = 9;    // ARROW: head length along the shaft (px)
 const ARROW_HEAD_HW = 2.6; // ARROW: head half-width (px); 9 long x 2.6 half ≈ 32° apex, CAD-sharp
+// DELTA MARKER: the whole drag guide — GUIDE LINE, ARROW and the Δ readout (see drawDragGuide) — is a
+// measuring aid, not part of the plan, so it is opt-in: off until the header's "Display delta marker"
+// checkbox turns it on, and nothing else in the scene depends on it.
+let deltaOn = false;
 const SHADOW_COL = "#000";
 // The dashed reach guides' stroke, in CSS px: 2 px wide, 5 px dashes with 5 px gaps — the example's
-// setLineDash([5, 5]) — so the reach curve, the partner's circle and the arrow's continuation all read
-// as one family of short dashes. Court-space drawing divides these by s to land on pixels; pixel-space
-// drawing uses them as is.
+// setLineDash([5, 5]) — so the reach curve and the arrow's continuation read as one family of short dashes.
+// Court-space drawing divides these by s to land on pixels; pixel-space drawing uses them as is.
 const DASH_W = 2, DASH_ON = 5, DASH_OFF = 5;
 // Short names for a player's clickable objects, shared by pick() and end()
 const DOT = 'dot';   // lettered placeholder (head dot): drags only, never emits
@@ -341,7 +358,8 @@ function levelBPCP(p, ray){
   return {dball, x: ray.x + ray.ux*dball, y: p.y};
 }
 
-// The stretch of the arrow's path that lies inside p's MBCR reach: the two BPCPs where the ball's own
+// The hitting window (HWS): the stretch of the arrow's path between the two EBCRPs, i.e. the part of
+// the BTL inside p's MBCR reach. It is the two BPCPs where the ball's own
 // distance from him equals the reach the flight has bought him by then, i.e. where the path crosses the
 // MPRC itself. Those are the EBCRPs — the earliest and the latest BPCP he can possibly meet — and both
 // of them sit exactly on the BTL. They are the roots of
@@ -378,7 +396,7 @@ function mbcrWindow(p, ray){
 // (bcRl, below): the level BPCP the VBCRL meets head on, the EBCRP an EBCRL ends on, or — when the
 // flight misses him — the tip of the VBCRL-U. One model, so the contact dot, the beams that start there
 // and the line can never name different places. A contact of its own did exactly that: clamped into the
-// reachable window it landed on the FAR EBCRP in the screenshot while the drawn line ended on the near
+// hitting window it landed on the FAR EBCRP in the screenshot while the drawn line ended on the near
 // one, and its opaque dot then painted over the faded one that EBCRP is supposed to keep.
 
 
@@ -392,11 +410,12 @@ function mbcrWindow(p, ray){
 // bounded, so they follow the swing instead. A ray parallel to the arrow names no crossing and is
 // skipped.
 //
-// The sweep covers the stretch of the BTL from the ball itself to the far EBCRP (mbcrWindow), so it runs
-// continuously from right beside him out to where the ball leaves his reach for good. Its first sample is
-// the ball's own BPCP: s = 0, where his reach is exactly STATIC_REACH, so that end sits on his wingspan
-// circle in the direction of the ball — the curve touches him, as the example's does (its sweep also
-// starts at the direction to the ball). Its last sample is the far EBCRP, on the BTL, unless the ball is
+// The sweep covers the hitting window (mbcrWindow): the BTL from the ball to the far EBCRP, so it runs
+// continuously from right beside him out to where the ball leaves his reach for good. The curve is drawn
+// from the player himself: its first point is his centre, then his wingspan circle in the direction of the
+// ball — the ball's own BPCP, s = 0, where his reach is exactly STATIC_REACH — and the envelope only after
+// that, as the example's sweep also starts at the direction to the ball. Its last sample is the far EBCRP, on
+// the BTL, unless the ball is
 // level with him before that: the curve always ends on the BCRL tip it is drawn to — the far edge's or
 // the level BPCP's, whichever comes later — and never short of the level line. The near EBCRP is NOT an
 // end: the ball is normally still outside his reach at s = 0 and only comes inside it at win.s1, but
@@ -410,7 +429,7 @@ function mprc(p){
   const ray = ballRay(), c = toPx(ball);
   const exit = Math.max(0, edgeReach(c.x, c.y, ray.ux, ray.uy)/s);   // metres, ball -> screen edge
   const lv = levelBPCP(p, ray);
-  const win = mbcrWindow(p, ray);                                    // the reachable stretch, or null
+  const win = mbcrWindow(p, ray);                                    // the hitting window, or null
   const sA = 0;                                                      // start at the ball's own BPCP
   // Out to the far edge, but never short of the BPCP that levels with him. Two ways the sweep could stop
   // first, and both would leave the curve hanging below the reach line while the plan point sits on it:
@@ -444,22 +463,48 @@ function mprc(p){
       const L = mbcrLen(s2);
       pts.push({x: p.x + dx/d*L, y: p.y + dy/d*L});
     }
+    // ... and from him: the centre first, then the one ray's stretch (see the notes above).
+    pts.unshift({x: p.x, y: p.y});
     return {pts, lv, win, exit, ray, sB};
   }
 
   const steps = Math.max(10, Math.round(Math.abs(da)*200));          // uniform in angle: ~200 per radian
   const pts = [];
-  for (let i = 0; i <= steps; i++){
-    const th = a0 + da*i/steps, cx = Math.cos(th), cy = Math.sin(th);
+  // The tip for one direction: where the ray from him meets the flight, and the reach the flight buys there.
+  const at = th => {
+    const cx = Math.cos(th), cy = Math.sin(th);
     const den = cx*ray.uy - cy*ray.ux;                        // the ray against the arrow's direction
-    if (Math.abs(den) < 1e-9) continue;                       // parallel to the path: no crossing
+    if (Math.abs(den) < 1e-9) return null;                    // parallel to the path: no crossing
     const u = ((ray.x - p.x)*ray.uy - (ray.y - p.y)*ray.ux) / den;   // p -> BPCP, metres
-    if (!(u >= 0)) continue;                                  // the crossing lies behind him
+    if (!(u >= 0)) return null;                               // the crossing lies behind him
     const s2 = (p.x + cx*u - ray.x)*ray.ux + (p.y + cy*u - ray.y)*ray.uy;  // ball -> BPCP, metres
-    if (s2 < sA - 1e-6 || s2 > sB + 1e-6) continue;           // outside the stretch the sweep covers
+    if (s2 < sA - 1e-6 || s2 > sB + 1e-6) return null;        // outside the stretch the sweep covers
     const L = mbcrLen(s2);
-    pts.push({x: p.x + cx*L, y: p.y + cy*L});                 // the BCRL tip for that direction
-  }
+    return {x: p.x + cx*L, y: p.y + cy*L};                    // the BCRL tip for that direction
+  };
+  // Sampling in angle is only even near him: for a ray that runs almost along the flight a small turn moves
+  // the BPCP a long way up the path, so the reach changes very fast and a fixed grid would cut a chord clean
+  // across that spike instead of following it. Any step whose ends are further apart than MAX_CHORD is
+  // bisected in angle until it is not, so the drawn curve follows the envelope wherever it bends hardest.
+  const MAX_CHORD = 0.18;                                     // metres, the longest step the curve may take
+  const walk = (th0, th1, depth) => {
+    const q1 = at(th1);
+    if (!q1) return;
+    const q0 = pts[pts.length-1];
+    if (q0 && Math.hypot(q1.x - q0.x, q1.y - q0.y) > MAX_CHORD && depth < 9){
+      const tm = (th0 + th1)/2;
+      if (at(tm)){ walk(th0, tm, depth+1); walk(tm, th1, depth+1); return; }
+    }
+    pts.push(q1);
+  };
+  const first = at(a0);
+  if (first) pts.push(first);                                 // the sweep's own first sample
+  for (let i = 0; i < steps; i++) walk(a0 + da*i/steps, a0 + da*(i+1)/steps, 0);
+  // The curve begins at the player himself, not a reach off him: the first point is his centre, and the
+  // next one is the envelope's first sample — the ball's own BPCP, where the reach is STATIC_REACH. The
+  // envelope never comes inside STATIC_REACH, so without the centre the sweep would hang in the air beside
+  // him, touching nothing.
+  pts.unshift({x: p.x, y: p.y});
   return {pts, lv, win, exit, ray, sB};
 }
 
@@ -476,8 +521,9 @@ function mprc(p){
 //     meet. mbcrLen grows with dball, so the shorter line is simply the smaller s. Both EBCRPs are still
 //     dotted (below); the one this line does not end on is the faded one;
 //   no EBCRP at all: VBCRL-U (unreachable), perpendicular to the BTL — the shortest way toward a flight
-//     he cannot touch — ending on the MPRC where that direction's reach runs out, with a faded dot on
-//     that tip: it is a place he could stretch to, not one where the ball ever is.
+//     he cannot touch — ending on the MPRC where that direction's reach runs out, or on the MCL when that
+//     reach would carry it across the net, with a faded dot on that tip: it is a place he could stretch
+//     to, not one where the ball ever is.
 // Returns {tip, ball, edge, edges, dball}: tip is on the MPRC (the reach the flight buys him), ball is
 // where the line crosses the BTL (null for VBCRL-U), edge is the BTL distance of an EBCRL tip (null when
 // the tip is not on the BTL), edges lists every EBCRP's BTL distance, and dball is how far down the BTL
@@ -488,8 +534,13 @@ function bcRl(p, curve){
   const {ray, win, lv, exit, sB} = curve;
   const at = s => ({x: ray.x + ray.ux*s, y: ray.y + ray.uy*s});
   const edges = [];
-  if (win && win.s1 > 1e-9) edges.push(win.s1);             // where the path enters his reach ...
-  if (win && Number.isFinite(win.s2)) edges.push(win.s2);   // ... and where it leaves it again
+  // Only crossings on his own side of the MCL count. A point of the flight beyond the net is one he may
+  // not play, so it is never dotted and never picked as the edge the VBCRL ends on — the line stops at
+  // the crossings he can actually use. Both teams stand clear of the net line by a head (see the drag
+  // clamp), so which side a Y falls on is never ambiguous.
+  const own = s => { const q = at(s); return q.y*p.y > 0; };
+  if (win && win.s1 > 1e-9 && own(win.s1)) edges.push(win.s1);             // where the path enters his reach ...
+  if (win && Number.isFinite(win.s2) && own(win.s2)) edges.push(win.s2);   // ... and where it leaves it again
   // VBCRLE-L: the ball is level with him on screen (exit) and inside his reach at that moment (win), so
   // the lateral line does reach it. The level BPCP is on the BTL by construction, so its BCRL end needs
   // no crossing test of its own.
@@ -508,8 +559,15 @@ function bcRl(p, curve){
   const s = Math.max(0, Math.min(sB, (p.x - ray.x)*ray.ux + (p.y - ray.y)*ray.uy));
   const q = at(s), dx = q.x - p.x, dy = q.y - p.y, d = Math.hypot(dx, dy);
   if (!(d > 1e-6)) return null;                             // the ball sits on him: no direction to show
-  const L = mbcrLen(s);
-  return {tip: {x: p.x + dx/d*L, y: p.y + dy/d*L}, ball: null, edge: null, edges, dball: s};
+  const L = mbcrLen(s), tip = {x: p.x + dx/d*L, y: p.y + dy/d*L};
+  // The MPRC may bulge across the net — the flight's reach knows no halves — but the line into it may not:
+  // a player never plays from the far side of the MCL, so the stretch stops where it meets the net and its
+  // faded dot sits right on the MCL. That is the furthest he may go toward a ball he cannot touch.
+  if (tip.y*p.y < 0){
+    const t = p.y/(p.y - tip.y), x = p.x + (tip.x - p.x)*t;  // where the segment meets the net
+    tip.x = x; tip.y = 0;
+  }
+  return {tip, ball: null, edge: null, edges, dball: s};
 }
 
 // an attacker always has the fixed static wingspan per side, wherever he stands
@@ -583,6 +641,15 @@ function solveHitter(){
           side: Math.abs(hit.x - p.x) < 1e-9 ? (ball.x < p.x ? -1 : 1) : (hit.x < p.x ? -1 : 1)};
 }
 
+// The one bad case of ball mode: the flight never crosses the hitter's MPRC (bcRl's VBCRL-U), so no reach
+// line can meet the ball at all. Then, and only then, the whole attacking pair reads red — the hitter has no
+// contact and his partner has nothing to cover. A partner who is merely not the man the arrow picked is not
+// at fault, so the red is never asked of a player on his own reach: it belongs to the pair.
+function noContact(){
+  const h = ball.on ? ballHitter() : null;
+  return !!(h && h.bcrl && !h.bcrl.ball);
+}
+
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 let cw = 0, ch = 0, dpr = 1, s = 1, ox = 0, oy = 0;
 function resize(){
@@ -621,6 +688,8 @@ const BALL_BRIGHTNESS = 1.1;
 //     x, y     centre in CSS pixels — the ctx must be in pixel space, not scaled to metres
 //     radius   ball radius in pixels
 //     opts     quat     orientation [w, x, y, z]     (default 0.0698, 0.6742, -0.7349, 0.0210)
+//              spin     extra turn of the whole pattern about the view axis, ° (default 0),
+//                       positive = clockwise on screen, i.e. the arrow's own rot can be passed as is
 //              az, el   light azimuth / elevation, °  (default -82, 26)
 //              seam     carved seam width, °          (default 4.0)
 //              segments seam resolution               (default 252)
@@ -628,7 +697,7 @@ const BALL_BRIGHTNESS = 1.1;
 //              seamColor seam colour, same forms      (default BALL_SEAM_COLOR)
 //              brightness overall brightness multiplier (default BALL_BRIGHTNESS)
 const drawTennisBall = (() => {
-  const D = {quat: [0.0698, 0.6742, -0.7349, 0.0210], az: 0, el: 0, seam: 4.0, segments: 252};
+  const D = {quat: [0.0698, 0.6742, -0.7349, 0.0210], spin: 0, az: 0, el: 0, seam: 4.0, segments: 252};
   // felt ramp: the five shading stops of the body, each the base colour plus an offset — the
   // highlight lifts it, the three lower bands drain it. Integers, so the default look is exact.
   const TINT = [[0.00,  26,  14,  55],
@@ -688,12 +757,20 @@ const drawTennisBall = (() => {
   return function drawTennisBall(ctx, x, y, radius, opts = {}){
     if (!(radius > 0.01)) return;
     const M = rot(n4(opts.quat || D.quat));
+    // spin: one more turn of everything about the view axis (z, the axis pointing at the reader), applied
+    // after the quaternion. The ball's own y is up while a screen's y is down, so a turn that is clockwise
+    // on screen — the sense the arrow's rot grows in — reads as (x, y) -> (x cos + y sin, y cos - x sin)
+    // here: the sine carries the opposite sign to the screen formula, and the two agree by construction.
+    const sp = (opts.spin ?? D.spin)*Math.PI/180, sc = Math.cos(sp), sn = Math.sin(sp);
     const L = light(opts.az ?? D.az, opts.el ?? D.el);
     const br = brightOf(opts.brightness);             // overall brightness, on top of the light shading
     const band = (opts.seam ?? D.seam)*Math.PI/180;    // seam half-width on the sphere (rad)
     const pts = seamPts(Math.max(16, Math.round(opts.segments ?? D.segments)));
     const N = pts.length, P = new Array(N), E1 = new Array(N), E2 = new Array(N), vis = new Array(N);
-    for (let i = 0; i < N; i++) P[i] = turn(M, pts[i]);
+    for (let i = 0; i < N; i++){
+      const p = turn(M, pts[i]);
+      P[i] = [p[0]*sc + p[1]*sn, p[1]*sc - p[0]*sn, p[2]];   // the hinge is z, so z is left alone
+    }
     for (let i = 0; i < N; i++){
       const p = P[i], pa = P[(i + N - 1) % N], pb = P[(i + 1) % N];
       const tan = n3([pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]]);    // along the seam
@@ -783,10 +860,14 @@ function arrowFromTip(x, y, tx, ty){
   return {vel: clampVel(d*VEL_PER_M), rot: normRot(Math.atan2(dy, dx)/DEG)};
 }
 const ballR = () => Math.max(BALL_R*s, ball.px);
+// The felt turns with the arrow: the seam pattern is spun about the view axis by the arrow's own rotation,
+// so the ball is never showing the same face twice — swing the arrow and its face turns with it, at 1:1.
+// ball.quat stays the ball's rest orientation (the arrow edits nothing else), and because the light is fixed
+// in the same frame, only the pattern turns while the highlight stays where the light puts it.
 function drawBall(){
   if (!ball.on) return;
   const c = toPx(ball);
-  drawTennisBall(ctx, c.x, c.y, ballR(), {quat: ball.quat});
+  drawTennisBall(ctx, c.x, c.y, ballR(), {quat: ball.quat, spin: ball.rot});
 }
 
 // ---- the ball's arrow. It always starts at the ball's centre, but the first stretch is never drawn:
@@ -859,22 +940,53 @@ function edgeReach(x, y, ux, uy){
 // of the screen, so the shot line reads across the whole court without competing with the arrow itself.
 // That dashed run is also the aiming handle: it is long, so grabbing it far from the ball gives a long
 // lever arm (see rotateArrow).
-function drawBallArrow(){
+// The flight itself, drawn first among the ball-mode elements (see draw): the marks and the players are
+// laid on top of it, never the other way round.
+function drawBallFlight(){
   if (!ball.on) return;
   const g = arrowGeom(), col = arrowColor();
   // The dashed run is the flight itself, drawn whole: it never stops at a player's reach, because the
   // trajectory is what the arrow means and a line that ends mid-court reads as the arrow being cut
-  // short. It runs from the tip all the way to the edge of the screen, wherever the arrow is aimed.
+  // short. It runs from the tip all the way to the edge of the screen, wherever the arrow is aimed —
+  // except across the HWS, which is drawn solid instead (below), so the two never overlap and double
+  // their alpha.
   const run = edgeReach(g.tip.x, g.tip.y, g.ux, g.uy);   // tip -> screen edge, along the arrow
+  const h = ballHitter();
+  const hws = h && h.win && Number.isFinite(h.win.s2) && h.win.s2 > h.win.s1 ? h.win : null;
+  const w0 = hws ? hws.s1*s : Infinity;                  // HWS near EBCRP, px from the ball's centre
+  const w1 = hws ? hws.s2*s : -Infinity;                 // ... and its far EBCRP
+  // Dashes up to the window, then from its far end to the edge; with no window the run is one piece.
+  const dashedRuns = [[g.len, Math.min(g.len + run, w0)], [Math.max(g.len, w1), g.len + run]];
   if (run > 0.5){
     ctx.save();
     ctx.globalAlpha = 0.6;                          // the opacity of the example's dashed trajectory
     ctx.strokeStyle = brighten(col);                // same hue, half way to white: readable at 0.6
     ctx.lineWidth = DASH_W; ctx.lineCap = 'butt';   // exactly the MBCR curve's stroke, in CSS px
     ctx.setLineDash([DASH_ON, DASH_OFF]);
-    line(g.tip.x, g.tip.y, g.tip.x + g.ux*run, g.tip.y + g.uy*run);
+    for (const [a, b] of dashedRuns)
+      if (b - a > 0.5) line(g.c.x + g.ux*a, g.c.y + g.uy*a, g.c.x + g.ux*b, g.c.y + g.uy*b);
     ctx.restore();
   }
+  // HWS: the hitting window is the segment of the BTL between the two EBCRPs — the part of the flight
+  // the hitter can actually meet. It is the same line as the dashed run above, so it uses exactly that
+  // stroke and colour and only drops the dashes: solid says "inside his window", dashed is the rest of
+  // the flight. No window at all (the path never enters his reach) means no solid stretch.
+  if (hws){
+    ctx.save();
+    ctx.globalAlpha = 0.6;
+    ctx.strokeStyle = brighten(col);
+    ctx.lineWidth = DASH_W; ctx.lineCap = 'butt';
+    ctx.setLineDash([]);                            // solid: the window, not the flight
+    line(g.c.x + g.ux*w0, g.c.y + g.uy*w0, g.c.x + g.ux*w1, g.c.y + g.uy*w1);
+    ctx.restore();
+  }
+}
+
+// The arrow itself — shaft, filled head and the speed readout — drawn in pixels above everything else
+// the ball mode puts on the court. It is the aim handle, not part of the model, so it stays on top even
+// though the flight it describes is drawn underneath the marks and the players (see draw).
+function drawBallArrow(){
+  const g = arrowGeom(), col = arrowColor();
   const bx = g.tip.x - g.ux*g.head, by = g.tip.y - g.uy*g.head;   // centre of the head's base
   const nx = -g.uy, ny = g.ux;                                    // across the shaft
   ctx.save();
@@ -953,6 +1065,26 @@ function drawBeams(){
   ctx.beginPath(); ctx.rect(VB.x0,VB.y0,VB.x1-VB.x0,VB.y1-VB.y0); ctx.clip();
   const atk = attackTeam();
   const defenders = players.filter(q => q.team !== atk);
+  // A beam is cast from the attacking player, so the half it is cast from is his own court: there he is in
+  // nobody's way and the shade only follows his own stroke, so it is four times lighter. Past the net it
+  // falls on the defender's ground, where it is the reach it takes away, and keeps its full weight. Every
+  // polygon is therefore filled twice, once inside each half, clipped at the MCL — one number, one rule, and
+  // the step in weight lands exactly on the net.
+  const atkUp = atk === 'A';                       // A stands in the upper half (y < 0), B in the lower
+  const ownRect = atkUp ? [VB.x0, VB.y0, VB.x1-VB.x0, -VB.y0] : [VB.x0, 0, VB.x1-VB.x0, VB.y1];
+  const oppRect = atkUp ? [VB.x0, 0, VB.x1-VB.x0, VB.y1] : [VB.x0, VB.y0, VB.x1-VB.x0, -VB.y0];
+  const OWN_LIGHT = 0.25;                          // a quarter: the beam on his own side
+  const beam = (pts, alpha) => {
+    for (const [r, a] of [[ownRect, alpha*OWN_LIGHT], [oppRect, alpha]]){
+      ctx.save();
+      ctx.beginPath(); ctx.rect(r[0], r[1], r[2], r[3]); ctx.clip();
+      ctx.globalAlpha = a; ctx.fillStyle = SHADOW_COL;
+      ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+  };
   // one beam per defender: source to that defender's reach zone, then the shadow behind him
   const cast = (S, q) => {
     // net mode: one dark beam only; otherwise the wide (lighter) zone, then the fast ball (darker)
@@ -965,12 +1097,9 @@ function drawBeams(){
       const dA = {x: A.x-S.x, y: A.y-S.y}, dB = {x: B.x-S.x, y: B.y-S.y};
       if (Math.hypot(dA.x,dA.y) < 1e-6 || Math.hypot(dB.x,dB.y) < 1e-6) continue;
       // lit part: source to defender
-      ctx.globalAlpha = 0.22; ctx.fillStyle = SHADOW_COL; //col;
-      ctx.beginPath(); ctx.moveTo(S.x,S.y); ctx.lineTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.closePath(); ctx.fill();
+      beam([S, A, B], 0.22);
       // shadow behind defender
-      ctx.globalAlpha = alpha; ctx.fillStyle = SHADOW_COL;
-      ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y);
-      ctx.lineTo(B.x+dB.x*T,B.y+dB.y*T); ctx.lineTo(A.x+dA.x*T,A.y+dA.y*T); ctx.closePath(); ctx.fill();
+      beam([A, B, {x: B.x+dB.x*T, y: B.y+dB.y*T}, {x: A.x+dA.x*T, y: A.y+dA.y*T}], alpha);
     }
   };
   if (ball.on){
@@ -988,153 +1117,219 @@ function drawBeams(){
   ctx.restore();
 }
 
-// Dashes around a closed circle: fit a whole number of dash periods around the circumference, so the
-// run closes exactly at θ = 0 instead of ending in a clipped dash at the seam — that stub is what made
-// the circle's dashes read as uneven in length.
-function dashCircle(R){
-  const per = (DASH_ON + DASH_OFF)/s, C = 2*Math.PI*R;
-  const n = Math.max(1, Math.round(C/per));
-  const on = (C/n) * DASH_ON/(DASH_ON + DASH_OFF);
-  ctx.setLineDash([on, C/n - on]);
+function drawPlayers(){
+  // Two passes: every reach mark first, every head after. The marks are where the ball can be met —
+  // crossing dots, reach lines, the MPRC curve, the partner’s NAPRZ — so they belong to the court, not to
+  // the player; the head is drawn last, over them and over the flight (see draw).
+  for (const p of players) drawPlayerMarks(p);
+  for (const p of players) drawPlayerHead(p);
 }
 
-function drawPlayers(){
+// One player’s marks: his SRCL (the static reach he keeps), his MPRC curve in ball mode, his partner’s
+// NAPRZ, the one BCRL that reaches the flight with its EBCRPs, his SRCPs — and last the contact dot, the
+// point the whole plan converges on (see the end of the body). Everything here is in court metres.
+function drawPlayerMarks(p){
   const atk = attackTeam(), hitter = ball.on ? ballHitter() : null;
   const ray = ball.on ? ballRay() : null;
-  for (const p of players){
-    const teamCol = COL[p.team], att = p.team === atk, r = reachOf(p);
-    // "Off his reaching zone": the ball's path never comes inside the MBCR envelope ahead of the ball —
-    // the very test the contact falls back on (mbcrWindow) — so the red says exactly "nothing on this
-    // flight can be met". Only the attacking team carries it: a defender's line is a coverage zone
-    // (defenderReach), not a reach curve, and it keeps its team colour.
-    const reachable = !ball.on || !att || !!mbcrWindow(p, ray);
-    const col = reachable ? teamCol : UNREACH_COL;
-    ctx.strokeStyle = col; ctx.lineCap = 'round';
-    ctx.lineWidth = 3.5/s;
-    // In ball mode the reach line — and its end dots — is still held inside the zone the defensive
-    // model gives him (arcReach), so when that zone is narrower than his fixed wingspan the line
-    // shortens to it. Otherwise it is the full STATIC_WINGSPAN/2. The MBCR reach the flight buys him is
-    // a separate thing and rides on top, as the BCRL to the EBCRP below.
-    const arc = ball.on && att && ballInFront(p) ? arcReach(p) : 0;
-    const half = arc ? Math.min(r, arc) : r;
-    // a defender outside net mode: half-transparent line over the whole (wide, lighter-shadow) reach,
-    // opaque over the fast ball (darker-shadow) reach, which is that same wide reach cut by the margin.
-    // In net mode the reach is a single dark zone, so the line is drawn solid all the way. Every reach
-    // here comes from reachOf/defenderReach/fastReach, i.e. from the attacker who is actually hitting
-    // and from the identical numbers the shadow edges use. In ball mode an attacker's line is the
-    // wingspan one (clipped to that zone above), solid, with small defensive-style end dots (see below).
-    const twoZones = !att && !inNetMode(p);
-    if (twoZones) ctx.globalAlpha = 0.5;
-    line(p.x-half,p.y,p.x+half,p.y);
-    ctx.globalAlpha = 1;
-    if (twoZones){ const rn = fastReach(p); line(p.x-rn,p.y,p.x+rn,p.y); }
+  const teamCol = COL[p.team], att = p.team === atk, r = reachOf(p);
+  // Red marks say one thing only: this flight cannot be returned (noContact — the VBCRL-U case, where the
+  // path never crosses the hitter's MPRC), and then the whole attacking pair wears it, hitter and partner
+  // alike. Nothing else is red: a partner who is simply not the one hitting is not at fault, and a defender
+  // never is — his line is a coverage zone (defenderReach), not a reach curve, so it keeps its team colour.
+  const col = ball.on && att && noContact() ? UNREACH_COL : teamCol;
+  ctx.strokeStyle = col; ctx.lineCap = 'round';
+  ctx.lineWidth = LINE_W/s;
+  // An attacker's reach line is his SRCL pair: centre -> SRCP-L and centre -> SRCP-R. In ball mode it —
+  // and its SRCP — is still held inside the zone the defensive model gives him (arcReach), so when that
+  // zone is narrower than his fixed wingspan the line shortens to it. Otherwise it is the full
+  // STATIC_WINGSPAN/2. The MBCR reach the flight buys him is a separate thing and rides on top, as the
+  // BCRL to the EBCRP below; the two lines are drawn independently and may differ in length and angle.
+  const arc = ball.on && att && ballInFront(p) ? arcReach(p) : 0;
+  const half = arc ? Math.min(r, arc) : r;
+  // The AHS (active hitting side) is the side he plans to meet this ball on: the side of his centre the
+  // contact lies on (hitter.side). In ball mode only that SRCL and SRCP are drawn — the other side is a
+  // reach he is not going to use. The partner has no AHS (the flight is not his to plan for), so he
+  // carries his travel circle instead; outside ball mode the pair is drawn whole, as before.
+  const ahs = !ball.on || !att ? null : (hitter && hitter.p === p ? hitter.side : 0);
+  const srclSides = ahs === null ? [-half, half] : (ahs ? [ahs*half] : []);
+  // a defender outside net mode: half-transparent line over the whole (wide, lighter-shadow) reach,
+  // opaque over the fast ball (darker-shadow) reach, which is that same wide reach cut by the margin.
+  // In net mode the reach is a single dark zone, so the line is drawn solid all the way. Every reach
+  // here comes from reachOf/defenderReach/fastReach, i.e. from the attacker who is actually hitting
+  // and from the identical numbers the shadow edges use.
+  const twoZones = !att && !inNetMode(p);
+  if (twoZones) ctx.globalAlpha = 0.5;
+  if (ahs === null) line(p.x-half,p.y,p.x+half,p.y);   // SRCL-L and SRCL-R (or a defender's zone)
+  else if (ahs){
+    // Ball mode: the AHS SRCL only — the side he plans to meet this ball on — and in grey instead of team
+    // colour: this side is a reach he keeps, not one he plays from, and the SRCP is no longer marked on it,
+    // so the line has to say both things by itself. Opaque and butt-capped: it ends exactly at the SRCP, the
+    // point he can reach a ball at, with nothing growing half a stroke width past it.
+    const prev = ctx.strokeStyle, cap = ctx.lineCap;
+    ctx.strokeStyle = SRCL_GREY; ctx.lineCap = 'butt';
+    line(p.x,p.y,p.x+ahs*half,p.y);
+    ctx.strokeStyle = prev; ctx.lineCap = cap;
+  }
+  ctx.globalAlpha = 1;
+  if (twoZones){ const rn = fastReach(p); line(p.x-rn,p.y,p.x+rn,p.y); }
 
-    // ball mode: only the man who actually meets the ball carries the MPRC — the reach the ball's own
-    // flight time allows, swept like the example: uniformly in ANGLE about him, each ray's BPCP giving
-    // r = Dp + STATIC_REACH (mprc). It starts right beside him on his wingspan circle, in the direction
-    // of the ball, and runs continuously out to the far EBCRP where the ball's path finally leaves that
-    // reach — or to the level BPCP when the ball is already out of reach by the time it is level with
-    // him, so the curve always joins the BCRL tip; a player with the ball behind him has none. Dashed
-    // team colour, like the example's curve. His partner is not meeting this ball, so a reach curve
-    // would claim he could: he gets the ground he can cover instead (below).
-    const fwd = ball.on && att && ballInFront(p);
-    const curve = fwd && hitter && hitter.p === p ? hitter.curve : null;
-    const bcrl = curve ? hitter.bcrl : null;
+  // ball mode: only the man who actually meets the ball carries the MPRC — the reach the ball's own
+  // flight time allows, swept like the example: uniformly in ANGLE about him, each ray's BPCP giving
+  // r = Dp + STATIC_REACH (mprc). It starts at his own centre, runs out to his wingspan circle in the
+  // direction of the ball and sweeps on continuously to the far EBCRP where the ball's path finally leaves
+  // that reach — or to the level BPCP when the ball is already out of reach by the time it is level with
+  // him, so the curve always joins the BCRL tip; a player with the ball behind him has none. Dashed
+  // team colour, like the example's curve. His partner is not meeting this ball, so a reach curve
+  // would claim he could: he gets the ground he can cover instead (below).
+  const fwd = ball.on && att && ballInFront(p);
+  const curve = fwd && hitter && hitter.p === p ? hitter.curve : null;
+  const bcrl = curve ? hitter.bcrl : null;
 
-    if (curve && curve.pts.length > 1){
-      ctx.save();
-      ctx.setLineDash([DASH_ON/s, DASH_OFF/s]);
-      ctx.lineWidth = DASH_W/s; ctx.lineCap = 'butt';   // butt caps: the dash itself is exactly DASH_ON
+  if (curve && curve.pts.length > 1){
+    ctx.save();
+    ctx.setLineDash([DASH_ON/s, DASH_OFF/s]);
+    ctx.lineWidth = DASH_W/s; ctx.lineCap = 'butt';   // butt caps: the dash itself is exactly DASH_ON
+    // The sweep is the reach the flight buys him, but where it bulges across the MCL it names ground he may
+    // not stand on, so that run is faded — the mirror of the partner's zone, which is clipped at the same
+    // line. The curve is cut exactly at y = 0 (a point is inserted there), so every run is stroked in a
+    // single alpha, and the dash phase is carried over the cut so the pattern does not restart.
+    const cut = [curve.pts[0]];
+    for (let i = 1; i < curve.pts.length; i++){
+      const a = cut[cut.length-1], b = curve.pts[i];
+      if (a.y*b.y < 0) cut.push({x: a.x + (b.x-a.x)*a.y/(a.y-b.y), y: 0});   // where it meets the net
+      cut.push(b);
+    }
+    const runs = [[cut[0]]];
+    for (let i = 1; i < cut.length; i++){
+      const run = runs[runs.length-1];
+      if (cut[i].y === 0 && run[run.length-1].y !== 0){ run.push(cut[i]); runs.push([cut[i]]); }
+      else run.push(cut[i]);
+    }
+    const period = (DASH_ON + DASH_OFF)/s;
+    let phase = 0;
+    for (const run of runs){
+      const q = run.find(pt => pt.y !== 0);          // any sample off the net: which half is this run on
+      ctx.globalAlpha = q && p.y*q.y < 0 ? 0.3 : 1;
+      ctx.lineDashOffset = -(phase % period);        // the dashes keep their rhythm across the cut
       ctx.beginPath();
-      ctx.moveTo(curve.pts[0].x, curve.pts[0].y);
-      for (let i = 1; i < curve.pts.length; i++) ctx.lineTo(curve.pts[i].x, curve.pts[i].y);
+      ctx.moveTo(run[0].x, run[0].y);
+      for (let i = 1; i < run.length; i++) ctx.lineTo(run[i].x, run[i].y);
       ctx.stroke();
-      ctx.restore();
+      for (let i = 1; i < run.length; i++) phase += Math.hypot(run[i].x-run[i-1].x, run[i].y-run[i-1].y);
     }
+    ctx.restore();
+  }
 
-    // ball mode, the partner: a plain circle instead of the sweep. Its radius is exactly the ground he
-    // can travel before his partner meets the ball — travelBy at the contact's BPCP, the same Dp = Vp*t
-    // the hitter's own BCRL adds to his wingspan — with no wingspan of its own: it says where he can get
-    // to, not what he can reach once he is there. Dashed like the reach curve, in the team colour.
-    if (fwd && hitter && hitter.p !== p){
-      const R = travelBy(hitter.hit.dball);            // metres, Vp * (dball / Vball)
-      if (R > 1e-6){
-        ctx.save();
-        dashCircle(R);
-        ctx.lineWidth = DASH_W/s; ctx.lineCap = 'butt';
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, R, 0, 2*Math.PI);
-        ctx.stroke();
-        ctx.restore();
-      }
-    }
-
-    // ball mode: the one visible BCRL pair (see bcRl). The VBCRLE beyond the BCRL is faded — it only marks
-    // the reach the flight buys him, out to the MPRC — while the VBCRL, the part that really reaches the
-    // ball, is opaque; the two coincide when the line ends on the BTL itself (EBCRL). Every EBCRP is
-    // dotted, the one the VBCRL ends on solid and the other faded, so the eye can tell which crossing he
-    // can actually meet. A VBCRL-U ends on the MPRC instead and keeps the faded dot: a place he could
-    // stretch to, not one the ball goes through.
-    if (bcrl){
-      const dot = (q, a) => {
-        ctx.globalAlpha = a;
-        ctx.beginPath(); ctx.arc(q.x, q.y, 4/s, 0, 7);
-        ctx.fillStyle = col; ctx.fill();
-        ctx.lineWidth = 2/s; ctx.strokeStyle = '#fff'; ctx.stroke();
-        ctx.lineWidth = 3.5/s;
-      };
+  // ball mode, the partner: his NAPRZ (non-attacking player reaching zone) is the MRA circle — the ground
+  // he can travel before his partner meets the ball, travelBy at the contact's BPCP, the same Dp = Vp*t the
+  // hitter's own BCRL adds to his wingspan, with no wingspan of its own: it says where he can get to, not
+  // what he can reach once he is there. It carries no outline at all: it is a claim on ground, not a line to
+  // a point, so the court under the circle is shaded instead (NAPRZ_ALPHA). It is cut at the MCL too: the
+  // circle meets the net as a chord, not as a half, so the part beyond it is clipped away — that ground is
+  // court he may not stand in and must not be claimed. The shade turns reddish exactly when the pair is red
+  // (noContact): then there is no contact left for him to cover.
+  if (fwd && hitter && hitter.p !== p){
+    const R = travelBy(hitter.hit.dball);            // metres, Vp * (dball / Vball)
+    if (R > 1e-6){
       ctx.save();
-      ctx.lineWidth = 3.5/s; ctx.lineCap = 'round';
-      if (!bcrl.edge){                                 // VBCRLE beyond the BCRL: reach, not contact
-        ctx.globalAlpha = 0.5;
-        line(p.x, p.y, bcrl.tip.x, bcrl.tip.y);
-      }
-      if (bcrl.ball){                                  // VBCRL: it does reach the ball, so opaque
-        ctx.globalAlpha = 1;
-        line(p.x, p.y, bcrl.ball.x, bcrl.ball.y);
-      }
-      for (const s2 of bcrl.edges){
-        const q = {x: curve.ray.x + curve.ray.ux*s2, y: curve.ray.y + curve.ray.uy*s2};
-        dot(q, bcrl.edge !== null && Math.abs(s2 - bcrl.edge) < 1e-9 ? 1 : 0.5);
-      }
-      if (!bcrl.edges.length) dot(bcrl.tip, 0.5);      // VBCRL-U: the stretch tip, faded
+      ctx.beginPath();                               // his own half of the world, up to the MCL
+      if (p.team === 'A') ctx.rect(VB.x0, VB.y0, VB.x1-VB.x0, -VB.y0);
+      else                ctx.rect(VB.x0, 0,     VB.x1-VB.x0,  VB.y1);
+      ctx.clip();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, R, 0, 2*Math.PI);
+      ctx.fillStyle = noContact() ? NAPRZ_SHADE_RED : NAPRZ_SHADE;
+      ctx.fill();
       ctx.restore();
     }
+  }
 
-    for (const sx of [-half, half]){
-      const on = att && !ball.on && (sx < 0 ? p.l : p.r);   // ball mode never lights a side
-      ctx.beginPath(); ctx.arc(p.x+sx,p.y,(att && !ball.on ? 7 : 4)/s,0,7);
-      ctx.fillStyle = on ? col : '#1b2430'; ctx.fill();
-      ctx.lineWidth = 2/s; ctx.strokeStyle = on ? '#fff' : col; ctx.stroke();
-    }
-    // ball mode: the contact point — the end of the reach line drawn above, where it meets the ball — as
-    // the same small dot as the reach-line ends but filled with the team colour and rimmed in white. The
-    // beams start exactly here (see drawBeams). A VBCRL-U reaches no ball, so it carries no contact dot:
-    // its own tip keeps the faded one, and the beams start from that tip all the same.
-    if (hitter && hitter.p === p && hitter.hit.reached){
-      ctx.beginPath(); ctx.arc(hitter.hit.x, hitter.hit.y, 4/s, 0, 7);
+  // ball mode: the one visible BCRL pair (see bcRl). The VBCRLE beyond the BCRL is faded — it only marks
+  // the reach the flight buys him, out to the MPRC — while the VBCRL, the part that really reaches the
+  // ball, is opaque; the two coincide when the line ends on the BTL itself (EBCRL). Every EBCRP is
+  // dotted, the one the VBCRL ends on solid and the other faded, so the eye can tell which crossing he
+  // can actually meet. A VBCRL-U ends on the MPRC instead and keeps the faded dot: a place he could
+  // stretch to, not one the ball goes through.
+  if (bcrl){
+    const dot = (q, a) => {
+      ctx.globalAlpha = a;
+      ctx.beginPath(); ctx.arc(q.x, q.y, 4/s, 0, 7);
       ctx.fillStyle = col; ctx.fill();
       ctx.lineWidth = 2/s; ctx.strokeStyle = '#fff'; ctx.stroke();
+      ctx.lineWidth = LINE_W/s;
+    };
+    ctx.save();
+    ctx.lineWidth = LINE_W/s; ctx.lineCap = 'round';
+    // Neither line can cross the MCL: the ball may cross the net, the player may not, so a VBCRL-U is cut
+    // there (bcRl) and the level BPCP lies on his own side by construction. The 0.4 fade the reaches used to
+    // need past the net went with the crossing.
+    ctx.globalAlpha = 0.5;
+    if (!bcrl.edge) line(p.x, p.y, bcrl.tip.x, bcrl.tip.y);       // VBCRLE beyond the BCRL: reach, not contact
+    if (bcrl.ball){
+      ctx.globalAlpha = 1;                                       // VBCRL: it does reach the ball, so opaque
+      line(p.x, p.y, bcrl.ball.x, bcrl.ball.y);
     }
-    // The rim — an attacker's white halo, a defender's team ring — turns red when the ball is off that
-    // attacker's reach; only the head's own background keeps the team colour.
-    if (att){
-      ctx.beginPath(); ctx.arc(p.x,p.y,(HEAD_PX+2)/s,0,7);
-      ctx.fillStyle = reachable ? '#fff' : UNREACH_COL; ctx.fill();
+    for (const s2 of bcrl.edges){
+      const q = {x: curve.ray.x + curve.ray.ux*s2, y: curve.ray.y + curve.ray.uy*s2};
+      dot(q, bcrl.edge !== null && Math.abs(s2 - bcrl.edge) < 1e-9 ? 1 : 0.5);
     }
-    ctx.beginPath(); ctx.arc(p.x,p.y,HEAD_PX/s,0,7);
-    ctx.fillStyle = att ? teamCol : '#1b2430'; ctx.fill();
-    if (!att){ ctx.strokeStyle = teamCol; ctx.lineWidth = 3/s; ctx.stroke(); }
-    // player letter (A-D) centred in the dot: bold while he is attacking, regular while defending;
-    // dark on a team-coloured attacker, white on a dark defender
-    ctx.fillStyle = att ? '#1b2430' : '#fff';
-    ctx.font = (att ? '700 ' : '400 ') + (13/s) + 'px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(p.letter, p.x, p.y + 0.5/s);
+    if (!bcrl.edges.length) dot(bcrl.tip, 0.5);      // VBCRL-U: the stretch tip, faded
+    ctx.restore();
+  }
+
+  // The SRCPs come first and the contact dot last. Each SRCP is the point on its own SRCL he can reach a
+  // ball at, so the line is drawn before its mark; and the contact dot (S-BCP) closes the pass because it
+  // is the point the whole plan converges on — nothing is laid over it. The head still comes later
+  // (drawPlayerHead) and does overlap these marks at ordinary zoom — the reach is about a metre, the head's
+  // circle a little wider — which is why the idle SRCP dots are rimmed white: what shows past the head still
+  // reads as a marked point.
+  for (const sx of srclSides){
+    if (ahs !== null){
+      // Ball mode: no dot and no mark. The SRCL above already ends at this point and is grey there, so the
+      // SRCP is read off the end of the line itself: anything drawn on top of it would only hide the end it
+      // marks. The AHS keeps exactly one visible tip, and that tip is the SRCP.
+      continue;
+    }
+    const on = att && (sx < 0 ? p.l : p.r);   // a side he is emitting from: idle mode only
+    ctx.beginPath(); ctx.arc(p.x+sx,p.y,(att ? 7 : 4)/s,0,7);
+    ctx.fillStyle = on ? col : '#1b2430'; ctx.fill();
+    ctx.lineWidth = 2/s; ctx.strokeStyle = att ? '#fff' : col; ctx.stroke();   // every SRCP is rimmed white
+  }
+  // Ball mode: the contact point — the end of the reach line drawn above, where it meets the ball — as the
+  // same small dot as the reach-line ends but filled with the team colour and rimmed in white. The beams
+  // start exactly here (see drawBeams). A VBCRL-U reaches no ball, so it carries no contact dot: its own tip
+  // keeps the faded one, and the beams start from that tip all the same.
+  if (hitter && hitter.p === p && hitter.hit.reached){
+    ctx.beginPath(); ctx.arc(hitter.hit.x, hitter.hit.y, 4/s, 0, 7);
+    ctx.fillStyle = col; ctx.fill();
+    ctx.lineWidth = 2/s; ctx.strokeStyle = '#fff'; ctx.stroke();
   }
 }
 
-// Temporary overlay drawn only while a player's DOT is held. Three named parts:
+// One player’s head: the rim (red when the ball’s path misses his reach in ball mode), the dot in his
+// team colour and his letter. Drawn after every mark, so the players read as standing on the court.
+function drawPlayerHead(p){
+  const att = p.team === attackTeam(), teamCol = COL[p.team];
+  // the very red the marks use, and under the very same rule: the whole pair, only when nothing can be met
+  const red = ball.on && att && noContact();
+  // The rim — an attacker's white halo, a defender's team ring — turns red only then; the head's own
+  // background keeps the team colour.
+  if (att){
+    ctx.beginPath(); ctx.arc(p.x,p.y,(HEAD_PX+2)/s,0,7);
+    ctx.fillStyle = red ? UNREACH_COL : '#fff'; ctx.fill();
+  }
+  ctx.beginPath(); ctx.arc(p.x,p.y,HEAD_PX/s,0,7);
+  ctx.fillStyle = att ? teamCol : '#1b2430'; ctx.fill();
+  if (!att){ ctx.strokeStyle = teamCol; ctx.lineWidth = 3/s; ctx.stroke(); }
+  // player letter (A-D) centred in the dot: bold while he is attacking, regular while defending;
+  // dark on a team-coloured attacker, white on a dark defender
+  ctx.fillStyle = att ? '#1b2430' : '#fff';
+  ctx.font = (att ? '700 ' : '400 ') + (13/s) + 'px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(p.letter, p.x, p.y + 0.5/s);
+}
+// Temporary overlay drawn only while a player's DOT is held and the DELTA MARKER setting is on (deltaOn).
+// Three named parts:
 //   GUIDE LINE — vertical dashed line at the held dot's x. Starts DOT_GAP clear of the held dot
 //                and ends DOT_GAP clear of the nearest opposing dot (nearest measured
 //                perpendicular to the line, i.e. smallest |Δx|).
@@ -1143,7 +1338,7 @@ function drawPlayers(){
 //   DELTA (Δ)  — horizontal displacement between the held player and that opponent, one decimal,
 //                printed beside the ARROW. It always shows; only the ARROW is hidden at 0.0 m.
 function drawDragGuide(){
-  if (!drag || drag.part !== DOT) return;
+  if (!deltaOn || !drag || drag.part !== DOT) return;
   const p = drag.p, x = p.x;                           // GUIDE LINE sits at this x
   let opp = null;
   for (const q of players)
@@ -1190,7 +1385,14 @@ function draw(){
   ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,cw,ch);
   ctx.translate(ox,oy); ctx.scale(s,s);
-  drawCourt(); drawBeams(); drawNet(); drawPlayers(); drawDragGuide();
+  drawCourt(); drawBeams(); drawNet();
+  // The flight before everything it carries: the BTL and its solid HWS are the backdrop of the ball mode,
+  // so the EBCRP/SRCP dots, the reach lines and the players are all laid on top of the trajectory and
+  // never under it. It is drawn in the same pixels as the arrow (see drawBallFlight).
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  drawBallFlight();
+  ctx.translate(ox,oy); ctx.scale(s,s);                 // back to court metres for the marks and players
+  drawPlayers(); drawDragGuide();
   ctx.setTransform(dpr,0,0,dpr,0,0);   // back to pixels: the ball keeps a readable size and sits on top
   drawBallArrow(); drawBall();
 }
@@ -1263,7 +1465,14 @@ cv.addEventListener('pointermove', e => {
   } else {
     const w = toWorld(px,py);
     const x = Math.max(VB.x0, Math.min(VB.x1, w.x+drag.dx));
-    const y = Math.max(VB.y0, Math.min(VB.y1, w.y+drag.dy));
+    let y = Math.max(VB.y0, Math.min(VB.y1, w.y+drag.dy));
+    // No player crosses the MCL (the net line, y = 0): his own half is the only place he may stand, and
+    // keeping the head's radius clear of the line stops the dot straddling the net. The ball is not a
+    // player, so it crosses freely.
+    if (drag.p !== ball){
+      const clear = HEAD_PX/s;
+      y = drag.p.team === 'A' ? Math.min(y, -clear) : Math.max(y, clear);
+    }
     drag.p.x = x; drag.p.y = y;    // the arrow is stored relative to the ball, so it rides along
   }
   draw();
@@ -1348,6 +1557,12 @@ ballOn.addEventListener('change', () => {
   writeHash();                  // "b:" appears while the ball is shown, and goes when it is hidden
   draw();
 });
+// ---- delta marker checkbox: the drag guide (GUIDE LINE, ARROW, Δ readout) is a measuring aid, so it is
+// off by default; ticking it lets a held DOT show the displacement line and its metres. Display only —
+// the drag itself, the URL and the scene are untouched — so a change just redraws.
+const deltaOnEl = document.getElementById('deltaOn');
+deltaOnEl.checked = deltaOn;                 // the box starts from the setting, never the other way round
+deltaOnEl.addEventListener('change', () => { deltaOn = deltaOnEl.checked; draw(); });
 // ---- ball size slider: writes ball.px, the ball's drawn radius in CSS px (BALL_PX is its default).
 // Its initial position follows ball.px, so editing the constant in the code is enough. Touching the
 // slider also shows the ball, so the size change is visible straight away.

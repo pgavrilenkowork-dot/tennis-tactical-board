@@ -6,9 +6,10 @@ the court. Screen space is in CSS pixels and s is pixels per metre. "The player'
 mean the centre of his head dot — every reach in this model is measured from there.
 
 BTL — Ball Trajectory Line
-    The dashed line along the ball's flight, from the ball out to the screen edge. Everything that is
-    "on the trajectory" is on the BTL. Its direction u (the arrow's rotation) is what all distances
-    along the flight are measured in, from the ball as s = 0.
+    The dashed line along the ball's flight, from the ball out to the screen edge; across the HWS it is
+    drawn solid instead (see HWS). Everything that is "on the trajectory" is on the BTL. Its direction
+    u (the arrow's rotation) is what all distances along the flight are measured in, from the ball as
+    s = 0.
 
 BPCP — a point on the BTL (the ball's position on its contact path).
     Every reach question is asked about a BPCP: dball is how many metres down the BTL it lies from the
@@ -18,14 +19,19 @@ BPCP — a point on the BTL (the ball's position on its contact path).
 MBCR — Maximum Ball Contact Reach
     The reach the ball's own flight time buys a player, in metres: Dp + STATIC_REACH, where
     Dp = Vp * (dball / Vball) is the ground his footwork covers while the ball flies dball, and
-    STATIC_REACH is one wingspan. It grows with dball, so the reach depends on where on the BTL the
-    contact happens (mbcrLen).
+    STATIC_REACH is the static reach per side (half a wingspan, the length of an SRCL). It grows with
+    dball, so the reach depends on where on the BTL the contact happens (mbcrLen).
 
 MPRC — Maximum Player Reaching Curve
     The drawn, dashed, team-coloured curve around the player. For every direction from him it is the
     tip of the longest reach the flight allows along that direction — the envelope of all possible
-    BCRLEs. It starts on his wingspan circle in the direction of the ball and ends where the ball
-    leaves his reach, or at the level BPCP / the screen edge when it never enters it (mprc).
+    BCRLEs. It starts at the player himself — his centre, then his wingspan circle in the direction of
+    the ball — and ends where the ball leaves his reach, or at the level BPCP / the screen edge when it
+    never enters it (mprc). Where the curve bulges across the MCL that run is faded — the mirror of the
+    NAPRZ, which is clipped at the same line.
+
+MPRCP — Maximum Player Reaching Contact point
+    Any point on the MPRC
 
 BCRLE — Ball Contact Reach Line Extension
     Any segment from the player's centre to a point of his MPRC. There are infinitely many; at most one
@@ -40,52 +46,98 @@ EBCRL — Edge BCRL
     reach then agree: BCRL = BCRLE, and the tip is an EBCRP.
 
 EBCRP — Edge Ball Contact Reach Point
-    The tip of an EBCRL: a point of the BTL the player can just reach. The BTL crosses the MPRC in at
-    most two points, so there are at most two EBCRPs — the earliest and the latest point on the flight
-    he can meet — and none at all when the flight never comes inside his reach.
-
-Reachable window
-    The stretch of the BTL inside the MBCR reach: [s1, s2] in metres from the ball, the roots of
-    |ball + s*u - p|^2 = mbcrLen(s)^2 (mbcrWindow). Null when the flight never comes inside his reach.
-    The two roots are exactly the two EBCRPs.
+    A special case of MPRCP - the tip of an EBCRL: a point of the BTL the player can just reach.
+    The BTL crosses the MPRC in at most two points, so there are at most two EBCRPs — the earliest
+    and the latest point on the flight he can meet — and none at all when the flight never comes
+    inside his reach. Only the ones on his own side of the MCL count: a crossing beyond the net
+    is never dotted and never chosen as the EBCRP the VBCRL ends on, because he may not play
+    the ball there (bcRl).
 
 VBCRLE / VBCRL — Visible BCRLE / BCRL
     The single pair that is drawn, in one direction, chosen by this priority:
     1. VBCRLE-L — the lateral one (horizontal, parallel to the net). It exists when the ball is inside
-       his reach at the moment it levels with him (the level BPCP lies inside the reachable window and
+       his reach at the moment it levels with him (the level BPCP lies inside the hitting window and
        on screen). His BCRL then runs from his centre to that level BPCP, and the rest of the VBCRLE,
        out to the MPRC, is the reach the flight bought him.
     2. Otherwise the shorter of the two EBCRLs — the nearer EBCRP, the earliest point on the flight he
        can meet. mbcrLen grows with dball, so the shorter line is the one to the smaller s.
     3. No EBCRP at all — see VBCRL-U.
     Opacity: the VBCRL is opaque, because it really reaches the ball. Only the part of the VBCRLE
-    beyond the BCRL is faded (0.5): it marks reach, not contact.
+    beyond the BCRL is faded (0.5): it marks reach, not contact. Neither line may cross the MCL: the
+    ball may cross the net, the player may not, so a VBCRL-U is cut there, and the level BPCP lies on
+    his own side by construction.
 
 VBCRL-U — Visible BCRL, Unreachable
-    The case with no EBCRP at all: the BTL never crosses the MPRC, so no reach line can meet the ball.
+    The case with no EBCRP points at all: the BTL never crosses the MPRC, so no reach line can meet the ball.
     The direction is then taken perpendicular to the BTL — the shortest way toward the flight — and the
     line ends on the MPRC where that direction's reach runs out. It is drawn faded and ends on a faded
     (0.5) dot: that tip is the place he could stretch to, not a point the ball goes through. (When the
     perpendicular foot lies behind the ball, or past the end of the drawn sweep, the nearest BPCP the
-    MPRC actually covers is used, so the tip always lands on the drawn curve.)
+    MPRC actually covers is used, so the tip lands on the drawn curve.) The tip never reaches past the
+    MCL, though the curve may: when the reach would carry it over the net the line stops where it meets
+    y = 0 and the faded dot sits on the net line.
+
+HWS — Hitting window segment
+    The segment of the BTL between the two EBCRPs: the stretch of the flight he can meet. In metres
+    from the ball it is [s1, s2], the roots of |ball + s*u - p|^2 = mbcrLen(s)^2 (mbcrWindow), which
+    are exactly the two EBCRPs; null when the flight never comes inside his reach. Unlike the rest of
+    the BTL it is drawn solid, not dashed.
+
+BCP - Ball contact point
+    This is any point on the HWS. A player can hit a ball from there.
+
+S-BCP - Selected ball contact point (contact dot)
+    Where the plan meets the ball, and it is read straight off the drawn reach line (bcRl), never solved
+    on its own: the level BPCP the VBCRL meets head-on, the EBCRP an EBCRL ends on. Nothing else may
+    place it, or the contact dot, the beams and the line would name different points. The contact dot is
+    opaque, it is drawn after the SRCPs so nothing is laid over it, and the beams start there. In the
+    VBCRL-U case there is no contact: the tip keeps the faded dot, and the beams start from that tip.
 
 EBCRP dots
     Every EBCRP is shown as a small dot on the BTL. The one the VBCRL ends on is solid; the one that
     does not belong to the VBCRL is drawn at 0.5. When no EBCRP belongs to the VBCRL — the lateral case,
     which ends on the level BPCP — both are at 0.5.
 
-Contact point (contact dot)
-    Where the plan meets the ball, and it is read straight off the drawn reach line (bcRl), never solved
-    on its own: the level BPCP the VBCRL meets head-on, the EBCRP an EBCRL ends on. Nothing else may
-    place it, or the contact dot, the beams and the line would name different points. The contact dot is
-    opaque and the beams start there. In the VBCRL-U case there is no contact: the tip keeps the faded
-    dot, and the beams start from that tip.
+SRCP — Static Reach Contact Point
+    The tip of an SRCL: the point a player can just touch with his feet planted, one static reach per
+    side (STATIC_REACH, half a wingspan) to the left or right of his centre, level with it. There are
+    two, SRCP-L and SRCP-R, each a small circle in the team colour, rimmed white. When his own zone is
+    narrower than that reach (an attacker right on top of the ball) the SRCL is shortened to the zone
+    and the SRCP sits at the tip of the drawn line. In ball mode only the AHS one is visible, and it is no
+    dot at all: it is simply the end of the grey SRCL, because that whole line has already said what the
+    SRCP is — the point on it he can reach a ball at, and the end of the reach he keeps. Nothing is drawn
+    over that end, so the tip of the line is the SRCP.
 
-STATIC_REACH (wingspan)
-    Half the static wingspan: the reach a player has with his feet planted, 1 m per side. Attackers
-    always carry exactly this on each side; a defender's reach line is his coverage zone instead.
+SRCL — Static Reach Contact Line
+    The segment from the player's centre to an SRCP: SRCL-L to SRCP-L, SRCL-R to SRCP-R. The two are
+    drawn independently of each other, and both are independent of the BCRL: an SRCL is the fixed
+    static reach and never depends on the flight, while a BCRL is the reach the flight buys him. They
+    can therefore differ in length and direction, and may cross; each is drawn as its own line. In ball
+    mode the drawn SRCL is the AHS one only, in opaque grey instead of the team colour — the reach he
+    keeps, not one he plays from — and it is a whole line, not a faded one, because no mark is drawn on
+    it: its grey tip is the SRCP.
 
-Partner travel circle
+AHS — Active Hitting Side
+    The side (his own left or right, as drawn on screen) from which a player plans to meet the ball.
+    In ball mode it is the side of his centre the contact point lies on — solveHitter's side — so the
+    SRCL and SRCP drawn for him are on the same side as the BCRL he hits along. The partner has no
+    AHS: the flight is not his to plan for, so he carries his travel circle instead.
+
+MCL — Middle Court Line
+    The imaginary line that coincides with the net line (y = 0) and runs on to infinity in both
+    directions; only the net itself is drawn. No player crosses it: a dragged player stops with his
+    head clear of it, so each player stays in his own half. The ball is not a player and does cross.
+
+MRA — Maximum Reach Area (the partner's circle)
     The dashed circle around the hitter's partner, radius travelBy(hitter.hit.dball) = Vp * t: the
     ground he can cover before the ball is met. It uses the same Dp = Vp*t as the hitter's own BCRL, so
-    the two can never drift apart.
+    the two can never drift apart. It is ground, not reach, so it carries no wingspan of its own, and
+    only its part on his own side of the MCL is drawn: the circle meets the net as a chord, and the
+    segment beyond it is clipped away. It is drawn as the NAPRZ (next).
+
+NAPRZ — Non-Attacking Player Reaching Zone
+    The MRA circle as it is drawn: not an outline but the court under it, filled with a shadow. It is
+    shaded rather than outlined because it claims ground, not a line to a point — there is no rim on
+    which a ball could be met. One alpha controls both shades (NAPRZ_ALPHA, 0.4): the ordinary black
+    one, and the reddish one it wears only when the flight cannot be met at all (VBCRL-U) — the case in
+    which the whole attacking pair turns red. It is clipped at the MCL exactly as the MRA is.
