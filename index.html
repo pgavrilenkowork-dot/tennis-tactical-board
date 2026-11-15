@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Doubles court: net player shadow</title>
 <style>
-:root{--bg:#eef1f4;--bar:#ffffff;--ink:#1b2430;--muted:#5b6776;--line:#d3d9e0;
+:root{--bg:#eef1f4;--bar:#ffffff;--ink:#1b2430;--muted:#5b6776;--line:#d3d9e0;--panel-w:320px;
   box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f141b;--bar:#18202a;--ink:#e8edf3;--muted:#98a4b3;--line:#2b3644}}
 :root[data-theme="dark"]{--bg:#0f141b;--bar:#18202a;--ink:#e8edf3;--muted:#98a4b3;--line:#2b3644}
@@ -13,44 +13,112 @@
 html,body{height:100%;margin:0}
 body{background:var(--bg);color:var(--ink);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden;overscroll-behavior:none}
 header{position:fixed;top:env(safe-area-inset-top,0px);left:0;right:0;z-index:2;display:flex;flex-direction:column;padding:10px 14px;background:var(--bar);border-bottom:1px solid var(--line)}
-#barToggle{display:none}
-#settings{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center}
-#status{flex:1 1 100%}
-label{display:flex;align-items:center;gap:8px;color:var(--muted)}
-output{min-width:3em;color:var(--ink)}
-input[type=range]{width:120px}
+/* The header is a tab strip plus the selected tab's pane. Three tabs share it; only one pane is laid
+   out at a time (see setTab), so the court gets everything the pane does not need. */
+#tabs{display:flex;gap:4px;margin:-2px 0 0;flex:0 0 auto}
+#tabs [role=tab]{font:inherit;font-weight:600;color:var(--muted);background:transparent;border:0;
+  border-bottom:2px solid transparent;margin-bottom:-1px;padding:6px 10px;border-radius:6px 6px 0 0;cursor:pointer}
+#tabs [role=tab]:hover{color:var(--ink)}
+#tabs [role=tab][aria-selected="true"]{color:var(--ink);border-bottom-color:#2e6fd0}
+#panel{display:flex;flex-direction:column;min-height:0}
+.tabpane{display:flex;flex-direction:column;gap:8px;padding-top:10px}
+.tabpane[hidden]{display:none}
+#status{color:var(--muted)}
+/* The Game tab: the game on court, named at the top, and its help line behind a triangle — the help is
+   long, and on a phone it would otherwise be the whole pane. */
+#gameHead{display:flex;align-items:center;gap:8px}
+#gameName{margin:0;font-size:15px;font-weight:600;flex:1 1 auto;min-width:0;overflow:hidden;
+  white-space:nowrap;text-overflow:ellipsis}
+#helpBtn{flex:0 0 auto;width:26px;height:26px;display:grid;place-items:center;padding:0;border:1px solid var(--line);
+  border-radius:6px;background:transparent;color:var(--muted);cursor:pointer}
+#helpBtn:hover{color:var(--ink);border-color:#2e6fd0}
+#helpBtn svg{width:16px;height:16px;display:block;fill:none;stroke:currentColor;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round;transition:transform .15s}
+#helpBtn[aria-expanded="true"] svg{transform:rotate(90deg)}
+label{display:flex;flex-wrap:wrap;align-items:center;gap:8px;color:var(--muted)}
+output{min-width:3em;color:var(--ink);text-align:right}
+input[type=range]{flex:1 1 120px;min-width:80px}
 button:focus-visible,input:focus-visible{outline:2px solid #2e6fd0;outline-offset:2px}
-canvas{position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;touch-action:none;cursor:grab;display:block}
+/* My Games: a "New game" button over the list of saved games. A row is the game's name — one tap opens
+   it, a double tap renames it — and a bin at the right; the lit dot marks the active game. */
+#newGame{font:inherit;font-weight:600;color:var(--ink);background:transparent;border:1px solid var(--line);
+  border-radius:8px;padding:8px 12px;cursor:pointer}
+#newGame:hover{border-color:#2e6fd0}
+#games{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.game{display:flex;align-items:center;gap:6px;border:1px solid transparent;border-radius:8px;
+  padding:2px 6px;cursor:pointer;touch-action:manipulation}
+.game::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--line);flex:0 0 auto}
+.game:hover{background:rgba(46,111,208,.08)}
+.game[data-active="true"]{background:rgba(46,111,208,.14);border-color:#2e6fd0}
+.game[data-active="true"]::before{background:#2e6fd0}
+.gname{flex:1 1 auto;min-width:0;font:inherit;color:var(--ink);background:transparent;padding:6px 4px;
+  text-align:left;border-radius:6px}
+/* The name is a button, so it is drawn as plain text: no box, no border, nothing that could be taken
+   for the rename field. Only the field itself ever looks like a field — hovering or clicking a row can
+   no longer read as "the editor opened". */
+button.gname{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;border:0;cursor:pointer}
+button.gname:hover{color:#2e6fd0}
+button.gname:focus-visible{outline:2px solid #2e6fd0;outline-offset:-2px}
+input.gname{border:1px solid var(--line);cursor:text}
+input.gname:focus{border-color:#2e6fd0;background:var(--bar);outline:none}
+/* the bin: the row's only action other than opening the game, so it keeps its own colour to stay apart */
+.gdel{flex:0 0 auto;width:26px;height:26px;display:grid;place-items:center;padding:0;border:0;
+  border-radius:6px;background:transparent;color:var(--muted);cursor:pointer}
+.gdel:hover{color:#c0392b;background:rgba(192,57,43,.12)}
+.gdel svg{width:14px;height:14px;display:block;fill:none;stroke:currentColor;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round}
+.hint{margin:0;color:var(--muted);font-size:12px}
+canvas{position:fixed;top:0;left:0;width:100vw;height:100vh;height:100dvh;touch-action:none;cursor:grab;display:block}
 canvas.drag{cursor:grabbing}
-/* Narrow screens: the header shrinks to a single tap-to-expand bar; tapping it reveals every setting.
-   Wide screens keep the full header, since #barToggle stays hidden and #settings is always shown. */
+/* Narrow screens: the pane stacks under the tabs from the top down and scrolls on its own, so the
+   court keeps the rest of the height. */
 @media (max-width:700px){
   header{padding:8px 12px}
-  #barToggle{display:flex;width:100%;align-items:center;justify-content:space-between;gap:12px;
-    font:inherit;font-weight:600;color:var(--ink);background:transparent;border:0;border-radius:6px;
-    padding:4px 0;cursor:pointer;text-align:left}
-  #barToggle .chev{display:inline-block;font-size:11px;line-height:1;color:var(--muted);transition:transform .18s ease}
-  header[data-open="true"] #barToggle .chev{transform:rotate(180deg)}
-  #settings{display:none}
-  header[data-open="true"] #settings{display:flex;margin-top:10px;
-    max-height:calc(100vh - 104px);max-height:calc(100dvh - 104px);overflow:auto;overscroll-behavior:contain}
-  label{flex:1 1 100%;justify-content:space-between}
-  input[type=range]{flex:1 1 auto;width:auto;min-width:80px}
+  #panel{max-height:calc(100vh - 118px);max-height:calc(100dvh - 118px);overflow:auto;overscroll-behavior:contain}
+}
+/* Wide screens: a tab that has a pane becomes a column down the left side and the court moves to its
+   right. The Game tab has no panel yet — its pane is only the scene's line of help — so it keeps the
+   header as a strip across the top and the court keeps the full width. */
+@media (min-width:701px){
+  header:not([data-tab="game"]){right:auto;bottom:0;width:var(--panel-w);border-right:1px solid var(--line);
+    border-bottom:0;overflow:auto;overscroll-behavior:contain}
+  header:not([data-tab="game"]) ~ main canvas{left:var(--panel-w);width:calc(100vw - var(--panel-w))}
+  #tabs{position:sticky;top:0;z-index:1;background:var(--bar)}
 }
 </style>
 </head>
 <body>
-<header>
-  <button id="barToggle" type="button" aria-expanded="false" aria-controls="settings">Settings<span class="chev" aria-hidden="true">▾</span></button>
-  <div id="settings">
-    <div id="status"></div>
-    <label>Dynamic Volley Reach <input id="rn" type="range"><output id="rnv"></output></label>
-    <label>Reach per side (groundstroke) <input id="rb" type="range"><output id="rbv"></output></label>
-    <label>Fast balls reach margin per side <input id="rm" type="range"><output id="rmv"></output></label>
-    <label>Show ball <input id="ballOn" type="checkbox"></label>
-    <label>Display delta marker <input id="deltaOn" type="checkbox"></label>
-    <label>Ball size <input id="ballSize" type="range" min="3" max="40" step="1"><output id="ballSizev"></output></label>
-    <label>Arrow width <input id="arrowW" type="range" min="2" max="12" step="1"><output id="arrowWv"></output></label>
+<header data-tab="game">
+  <nav id="tabs" role="tablist" aria-label="Controls">
+    <button type="button" role="tab" id="tabbtn-game" aria-selected="true" aria-controls="tab-game">Game</button>
+    <button type="button" role="tab" id="tabbtn-games" aria-selected="false" aria-controls="tab-games">My Games</button>
+    <button type="button" role="tab" id="tabbtn-settings" aria-selected="false" aria-controls="tab-settings">Settings</button>
+  </nav>
+  <div id="panel">
+    <section class="tabpane" id="tab-game" role="tabpanel" aria-labelledby="tabbtn-game">
+      <div id="gameHead">
+        <h2 id="gameName">Game 1</h2>
+        <button id="helpBtn" type="button" aria-expanded="false" aria-controls="status"
+                aria-label="Help" title="Show help">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+        </button>
+      </div>
+      <div id="status" hidden></div>
+    </section>
+    <section class="tabpane" id="tab-games" role="tabpanel" aria-labelledby="tabbtn-games" hidden>
+      <button id="newGame" type="button">New game</button>
+      <ul id="games"></ul>
+      <p class="hint">Tap a game to open it, double tap to rename it.</p>
+    </section>
+    <section class="tabpane" id="tab-settings" role="tabpanel" aria-labelledby="tabbtn-settings" hidden>
+      <label>Dynamic Volley Reach <input id="rn" type="range"><output id="rnv"></output></label>
+      <label>Reach per side (groundstroke) <input id="rb" type="range"><output id="rbv"></output></label>
+      <label>Fast balls reach margin per side <input id="rm" type="range"><output id="rmv"></output></label>
+      <label>Show ball <input id="ballOn" type="checkbox"></label>
+      <label>Display delta marker <input id="deltaOn" type="checkbox"></label>
+      <label>Ball size <input id="ballSize" type="range" min="3" max="40" step="1"><output id="ballSizev"></output></label>
+      <label>Arrow width <input id="arrowW" type="range" min="2" max="12" step="1"><output id="arrowWv"></output></label>
+    </section>
   </div>
 </header>
 <main><canvas id="c"></canvas></main>
@@ -161,8 +229,9 @@ resetPlayers();
 //   "b:0.00:6.50:2.00:3.50" is still read — its tip becomes a speed and a rotation on the way in —
 //   and a tip-less "b:0.00:6.50" places the ball and leaves the arrow pointing the way it already
 //   does. A fragment with no ball entry hides the ball. The arrow's colour follows from the rotation
-//   — which side of the net it points at, see arrowColor() — so a link restores that too. The ball's
-//   size and arrow width are on-screen settings, not part of the link.
+//   — which side of the net it points at, see arrowColor() — so a link restores that too. The court's
+//   own settings ride in the same fragment as a separate "s-" entry (see SETTINGS below), so one link
+//   restores the scene and every control that shapes it.
 const HASH_TAG = 'p-';
 // the ball's entry, wherever it sits in the fragment: "b-" then centre x, y, speed (km/h) and
 // rotation (degrees). ':' and ';' both work between those four numbers, hence the mixed class.
@@ -192,11 +261,17 @@ const canonical = list => HASH_TAG + list.slice()
 const hashOf = () => canonical(
   players.map(p => ({letter: p.letter, x: p.x, y: p.y, dir: p.bcrleDir, side: sideOf(p)}))
     .concat(ball.on ? [{ball: true, x: ball.x, y: ball.y, vel: ball.vel, rot: ball.rot}] : []));
-function readHash(){
-  let raw;
-  try { raw = decodeURIComponent(location.hash.replace(/^#/, '')); } catch (e){ return []; }
-  if (raw.slice(0, HASH_TAG.length).toLowerCase() !== HASH_TAG) return [];   // not ours: leave the court alone
-  raw = raw.slice(HASH_TAG.length);
+// the fragment as text, decoded ("" when there is none, or when it cannot be decoded)
+function fragmentText(){
+  try { return decodeURIComponent(location.hash.replace(/^#/, '')); } catch (e){ return ''; }
+}
+// the court's part of a fragment, as a list of entries. The "p-" entry may sit anywhere in it and
+// everything else — the settings entry, junk — is skipped, so a link's order is free.
+function parseCourt(text){
+  const all = text || '';
+  const at = all.search(/(?:^|;)\s*p\s*-/i);
+  if (at < 0) return [];                            // not ours: leave the court alone
+  let raw = all.slice(at).replace(/^;?\s*p\s*-/i, '');
   const out = [];
   const bm = BALL_RE.exec(raw);                    // the ball entry is picked out first, so its "b"
   if (bm){                                         // can never be read as player B
@@ -222,8 +297,8 @@ function readHash(){
 // that player emits nothing, no direction = he plans automatically), while letters, teams and who is
 // attacking stay as they are. The ball is the fragment's too: a "b:" entry shows it with that arrow, and
 // its absence hides it.
-function applyHash(){
-  const all = readHash();
+function applyCourt(text){
+  const all = parseCourt(text);
   const hits = all.filter(q => !q.ball && byLetter(q.letter));
   const b = all.find(q => q.ball);
   if (!hits.length && !b) return false;
@@ -246,28 +321,319 @@ function applyHash(){
   syncBallUI();
   return true;
 }
-// replaceState keeps the back button clean; file:// may refuse it, so fall back to the fragment itself
+// the whole fragment: the court, then the settings. One link therefore carries the scene AND the
+// controls, and a saved game stores exactly the same two pieces of text.
+function fullHash(){ return hashOf() + ';' + settingsFragment(); }
+// replaceState keeps the back button clean; file:// may refuse it, so fall back to the fragment itself.
+// Every write also refreshes the active game's record — a drag, a tap or a slider is a save.
 function writeHash(){
-  const h = hashOf();
+  markDirty();
+  const h = fullHash();
   if (location.hash.replace(/^#/, '') === h) return;
   try { history.replaceState(null, '', '#' + h); }
   catch (e){ location.replace('#' + h); }
 }
-// one URL write per frame at most, however fast the pointer moves
-let hashQueued = false;
+// one URL write per ~60 ms at most, however fast the pointer moves. A timer, not a frame: sliders are
+// often moved in a window that is not being painted, and a queued frame would never be drawn there.
+let hashTimer = 0;
 function scheduleHash(){
-  if (hashQueued) return;
-  hashQueued = true;
-  requestAnimationFrame(() => { hashQueued = false; writeHash(); });
+  if (hashTimer) return;
+  hashTimer = setTimeout(() => { hashTimer = 0; writeHash(); }, 60);
 }
 // a fragment that is pasted or edited re-places the players and re-lights the emitting ends; our
 // own writes are exactly the canonical form of the live state, so they are recognised and ignored
 window.addEventListener('hashchange', () => {
   if (drag) return;          // mid-drag the pointer owns the position and our own writes are stale
-  const pos = readHash();
-  if (!pos.length || canonical(pos) === hashOf()) return;
-  if (applyHash()){ status(); draw(); }
+  const raw = fragmentText();
+  const pos = parseCourt(raw);
+  const court = pos.length > 0 && canonical(pos) !== hashOf();
+  const settings = settingsOf(raw) !== settingsText();
+  if (!court && !settings) return;
+  if (court) applyCourt(raw);
+  if (settings) applySettingsText(settingsOf(raw));
+  markDirty();               // what the link brought in is the active game's now
+  status(); draw();
 });
+
+// ---- settings in the fragment
+// A setting is what shapes the scene rather than the court: the three reach numbers and the four
+// display controls. They travel like the court does — one "<key>:<value>" token each, keyed by the
+// first letters of its name, joined by ';' behind an "s-" tag — so a link carries them too and a saved
+// game holds exactly the text a link would:
+//   #p-A2.23:-3.50;B2.00:2.00;b-0.00:6.50:90.0:303.70;s-dvr:1.5;rps:4.0;fbrm:-30;ddm:Y;sb:Y;bs:11;aw:4
+//     dvr  Dynamic Volley Reach        rps  Reach per side (groundstroke)
+//     fbrm Fast balls reach margin     ddm  Display delta marker
+//     sb   Show ball                   bs   Ball size, CSS px
+//     aw   Arrow width, CSS px
+// The values are printed the way the readouts print them (even-odd: one decimal for metres, whole
+// percent for the margin, Y/N for the boxes) and read back through each control's own range, so a
+// hand-edited link can never push a slider past its ends. Order is free and unknown keys are ignored,
+// which is what lets an older link open in a newer page.
+const SETTINGS_TAG = 's-';
+// a number from a fragment, clamped into its control's track; null (keep what is there) when it is junk
+function numIn(text, lo, hi){
+  const n = parseFloat(text);
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null;
+}
+const SETTINGS = [
+  {key:'dvr',  name:'Dynamic Volley Reach',    get: () => fmtNum(rNet, 1),
+   set:s => { const v = numIn(s, 0.5, 3);   if (v != null) rNet = v; }},
+  {key:'rps',  name:'Reach per side',          get: () => fmtNum(rBase, 1),
+   set:s => { const v = numIn(s, 1, 8);     if (v != null) rBase = v; }},
+  {key:'fbrm', name:'Fast balls reach margin', get: () => fmtNum(rMargin*100, 0),
+   set:s => { const v = numIn(s, -60, -5);  if (v != null) rMargin = v/100; }},
+  {key:'ddm',  name:'Display delta marker',    get: () => deltaOn ? 'Y' : 'N',
+   set:s => { deltaOn = /^y/i.test(s); }},
+  {key:'sb',   name:'Show ball',               get: () => ball.on ? 'Y' : 'N',
+   set:s => { ball.on = /^y/i.test(s); }},
+  {key:'bs',   name:'Ball size',               get: () => String(Math.round(ball.px)),
+   set:s => { const v = numIn(s, 3, 40);    if (v != null) ball.px = Math.round(v); }},
+  {key:'aw',   name:'Arrow width',             get: () => String(Math.round(arrowW)),
+   set:s => { const v = numIn(s, 2, 12);    if (v != null) arrowW = Math.round(v); }},
+];
+function settingsText(){ return SETTINGS.map(q => q.key + ':' + q.get()).join(';'); }
+function settingsFragment(){ return SETTINGS_TAG + settingsText(); }
+// the settings part of a whole fragment, wherever its "s-" entry sits ("" when there is none). The
+// court's entries can never look like it: none of their letters is an "s".
+function settingsOf(text){
+  const m = /(?:^|;)\s*s\s*-/i.exec(text || '');
+  return m ? text.slice(m.index).replace(/^;?\s*s\s*-/i, '') : '';
+}
+// read a settings fragment into the live settings; true when at least one setting was recognised
+function applySettingsText(text){
+  if (!text) return false;
+  let hit = false;
+  for (const part of text.split(';')){
+    const m = /^\s*([a-z]+)\s*:\s*([^\s;]+)\s*$/i.exec(part);
+    if (!m) continue;
+    const q = SETTINGS.find(k => k.key === m[1].toLowerCase());
+    if (!q) continue;
+    q.set(m[2]); hit = true;
+  }
+  if (hit) syncSettingsUI();
+  return hit;
+}
+
+// ---- saved games
+// localStorage holds the list of games and which one is active. A game is a name plus the two pieces
+// of text a link is made of — its court ("p-...") and its settings ("s-...") — so restoring one is
+// literally opening a link, and there is no second copy of the scene to keep in step.
+const STORE_KEY = 'tennis:games:v1';
+let games = [], activeId = null;
+const activeGame = () => games.find(g => g.id === activeId) || null;
+let saveTimer = 0;
+function saveStore(){
+  if (saveTimer){ clearTimeout(saveTimer); saveTimer = 0; }
+  try { localStorage.setItem(STORE_KEY, JSON.stringify({active: activeId, games})); }
+  catch (e){ /* private mode or a full quota: the session still works, it just is not remembered */ }
+}
+// a drag rewrites the record every frame, so the write itself waits for the pointer to rest; pagehide
+// gives it the last word before the tab goes away
+function saveSoon(){
+  if (saveTimer) return;
+  saveTimer = setTimeout(saveStore, 150);
+}
+window.addEventListener('pagehide', saveStore);
+// the active game's text follows the live court and settings; every writeHash() lands here
+function markDirty(){
+  const g = activeGame();
+  if (!g) return;
+  g.pos = hashOf(); g.set = settingsFragment();
+  saveSoon();
+}
+function loadStore(){
+  let raw = null;
+  try { raw = JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); } catch (e){ return false; }
+  if (!raw || !Array.isArray(raw.games)) return false;
+  games = raw.games.filter(g => g && g.id && typeof g.pos === 'string')
+    .map(g => ({id: String(g.id), name: String(g.name || 'Game'), pos: g.pos,
+                set: typeof g.set === 'string' ? g.set : ''}));
+  if (!games.length) return false;
+  activeId = games.some(g => g.id === raw.active) ? raw.active : games[0].id;
+  return true;
+}
+const newGameId = () => 'g' + Date.now().toString(36) + Math.floor(Math.random()*1e4).toString(36);
+
+// a fresh game opens on the page's own default scene: the players where resetPlayers puts them, the
+// ball hidden at its starting spot, every setting back at its constant — the scene a first-ever visit
+// shows. A stored game is the opposite: its two fragments, put back exactly as a link would.
+function resetScene(){
+  resetPlayers();
+  ball.on = false; ball.x = 0; ball.y = 6.5; ball.vel = 90; ball.rot = 303.7;
+  ball.px = BALL_PX; rNet = 1.5; rBase = 4; rMargin = -0.30;
+  deltaOn = false; arrowW = BALL_ARROW_W;
+  syncSettingsUI();
+}
+function restoreGame(g){
+  if (!g) return false;
+  applyCourt(g.pos);                    // also places the ball and lights the emitting ends
+  applySettingsText(settingsOf(g.set));  // the record holds the whole "s-..." fragment, tag and all
+  syncSettingsUI();
+  return true;
+}
+// A new game takes the first number nobody is using, so "Game 3" is never handed out twice: deleting
+// game 2 does not make the game after it a second "Game 3", and a name moved off the pattern frees its
+// number up again. The comparison is case- and space-insensitive, so a hand-typed "game 3" counts too.
+function newGameName(){
+  const taken = new Set(games.map(g => g.name.trim().toLowerCase()));
+  let n = 1;
+  while (taken.has('game ' + n)) n++;
+  return 'Game ' + n;
+}
+function createGame(){
+  resetScene();
+  const g = {id: newGameId(), name: newGameName(),
+             pos: hashOf(), set: settingsFragment()};
+  games.push(g);
+  activeId = g.id;                      // a new game is the one on court, always
+  renderGames(); saveStore();
+  return g;
+}
+// The lit dot and aria-current follow activeId without rebuilding the rows. Rebuilding would replace the
+// very element the tap landed on, and the second half of a double click would then arrive on a detached
+// button: a pointerup on a node that is no longer in the page never reaches #games at all, so the
+// rename would silently not happen.
+function paintActive(){
+  for (const li of gameList.children){
+    const on = li.dataset.id === activeId;
+    if (on){ li.dataset.active = 'true'; li.setAttribute('aria-current', 'true'); }
+    else { delete li.dataset.active; li.removeAttribute('aria-current'); }
+  }
+  syncGameName();
+}
+// a tap on a row loads that game; the link follows it, since the link always shows what is on court
+function activateGame(id){
+  const g = games.find(q => q.id === id);
+  if (!g) return false;
+  if (id !== activeId){ activeId = id; restoreGame(g); }
+  paintActive(); saveStore();
+  writeHash();
+  status(); draw();
+  return true;
+}
+const gameList = document.getElementById('games');
+// the bin's icon, in the page's own stroke style; it carries no text, so the button names itself with
+// an aria-label instead (see renderGames)
+const TRASH_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true">' +
+  '<path d="M4 7h16M10 4h4M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg>';
+function renderGames(){
+  gameList.textContent = '';
+  for (const g of games){
+    const li = document.createElement('li');
+    li.className = 'game'; li.dataset.id = g.id;
+    if (g.id === activeId){ li.dataset.active = 'true'; li.setAttribute('aria-current', 'true'); }
+    // The name is a button, not a field: one tap (or Enter) opens the game and only a double tap (or
+    // F2) swaps it for a text field, so simply opening a game can never leave you typing in its name.
+    const name = document.createElement('button');
+    name.type = 'button'; name.className = 'gname';
+    name.textContent = g.name; name.title = 'Double tap to rename';
+    li.appendChild(name);
+    const del = document.createElement('button');
+    del.type = 'button'; del.className = 'gdel';
+    del.innerHTML = TRASH_SVG;
+    del.setAttribute('aria-label', 'Delete ' + g.name); del.title = 'Delete ' + g.name;
+    li.appendChild(del);
+    gameList.appendChild(li);
+  }
+  syncGameName();                 // the Game tab's head always names the game on court
+}
+// A double tap swaps the name button for a field in place. Enter or leaving the field commits the new
+// name, Escape drops it; the list re-renders either way, so the button comes back with whatever won.
+// The row is found again from the game's id rather than trusted from the event: whatever happened to
+// the element the tap landed on, the field always goes into the row that is in the page now.
+function startRename(g){
+  const li = [...gameList.children].find(r => r.dataset.id === g.id);
+  if (!li) return;
+  const btn = li.querySelector('button.gname');
+  if (!btn) return;                              // already editing this row
+  const field = document.createElement('input');
+  field.type = 'text'; field.className = 'gname'; field.value = g.name;
+  field.setAttribute('aria-label', 'Game name');
+  btn.replaceWith(field);
+  field.focus(); field.select();
+  let done = false;
+  const finish = keep => {
+    if (done) return; done = true;
+    const t = field.value.trim();
+    if (keep && t) g.name = t;                   // a name cleared by accident keeps the old one
+    saveStore(); renderGames();
+  };
+  field.addEventListener('keydown', e => {
+    if (e.key === 'Enter'){ e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape'){ e.preventDefault(); finish(false); }
+  });
+  field.addEventListener('blur', () => finish(true));
+}
+// The bin takes the game out of the store. If it was the one on court, the next game in the list
+// inherits the court (the one before it, when the deleted game was last), and if it was the only game a
+// fresh Game 1 appears in its place: the list always holds the game the court is showing.
+function deleteGame(g){
+  const at = games.indexOf(g);
+  if (at < 0) return;
+  games.splice(at, 1);
+  if (g.id === activeId){
+    activeId = null;
+    const next = games[Math.min(at, games.length - 1)];
+    if (next){ activeId = next.id; restoreGame(next); }
+  }
+  if (!games.length) createGame();
+  renderGames(); saveStore();
+  writeHash(); status(); draw();
+}
+// A tap opens the game it lands on, two taps in quick succession rename it instead. Pointer events
+// rather than click/dblclick: a double tap on a phone is not a reliable dblclick, and this way a
+// mouse, a finger and a pen all take the same path. Ids are read off the row's data, not the element,
+// so a re-render in the middle of the gesture cannot confuse it.
+const DOUBLE_MS = 350, DOUBLE_PX = 30;
+let lastTap = {id: '', at: 0, x: 0, y: 0};
+gameList.addEventListener('pointerup', e => {
+  const li = e.target.closest('.game');
+  if (!li) return;
+  const g = games.find(q => q.id === li.dataset.id);
+  if (!g) return;
+  if (e.target.closest('.gdel')){ deleteGame(g); return; }   // the bin acts at once, no tap counting
+  if (e.target.closest('input')) return;                     // the name field owns its own taps
+  const now = performance.now();
+  const dbl = lastTap.id === g.id && now - lastTap.at < DOUBLE_MS &&
+              Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < DOUBLE_PX;
+  lastTap = {id: g.id, at: now, x: e.clientX, y: e.clientY};
+  if (dbl) startRename(g);
+  else activateGame(g.id);
+});
+// A desktop double click arrives as a dblclick of its own, which is more reliable than counting the two
+// pointerups ourselves; it is the same rename, and if the pointerup count already opened the field this
+// finds no button left to swap and does nothing. Touch screens never send dblclick, so the count above
+// stays the path there.
+gameList.addEventListener('dblclick', e => {
+  const li = e.target.closest('.game');
+  if (!li || e.target.closest('.gdel') || e.target.closest('input')) return;
+  const g = games.find(q => q.id === li.dataset.id);
+  if (g) startRename(g);
+});
+// the same three actions from the keyboard: Enter opens, F2 renames, and the bin deletes
+gameList.addEventListener('keydown', e => {
+  const li = e.target.closest('.game');
+  if (!li) return;
+  const g = games.find(q => q.id === li.dataset.id);
+  if (!g || e.target.closest('input')) return;
+  if (e.key === 'F2'){ e.preventDefault(); startRename(g); }
+  else if (e.key === 'Enter' || e.key === ' '){
+    e.preventDefault();                     // a button would fire a click of its own as well
+    if (e.target.closest('.gdel')) deleteGame(g); else activateGame(g.id);
+  }
+});
+document.getElementById('newGame').addEventListener('click', () => {
+  createGame();
+  writeHash();               // the new game's default court goes into the link at once
+  status(); draw();
+});
+// the stored list, or the very first game on a first visit — resetPlayers() has already put the
+// default scene on the court, so Game 1 simply records it
+function initGames(){
+  if (loadStore()){ restoreGame(activeGame()); renderGames(); return; }
+  games = []; activeId = null;
+  createGame();
+}
 
 // ---- defender reach
 // net mode: a defender closer to the net than this (1/4 of the net-to-baseline distance)
@@ -752,7 +1118,11 @@ function resize(){
   dpr = window.devicePixelRatio || 1;
   cw = r.width; ch = r.height;
   cv.width = Math.round(cw*dpr); cv.height = Math.round(ch*dpr);
-  const top = document.querySelector('header').getBoundingClientRect().bottom + 6;
+  // The header sits above the court on a narrow screen and beside it on a wide one, where a tab's pane
+  // is a column down the left. Only an overlap in x means its bottom edge eats into the top of the court.
+  const hb = document.querySelector('header').getBoundingClientRect();
+  const over = hb.bottom > r.top && hb.right > r.left && hb.left < r.right;
+  const top = over ? hb.bottom - r.top + 6 : 0;
   const availH = Math.max(100, ch - top);
   s = Math.min(cw/(CW+2*MX), availH/(CL+2*MY));
   ox = cw/2; oy = top + availH/2;
@@ -955,15 +1325,6 @@ function arrowFromTip(x, y, tx, ty){
   return {vel: clampVel(d*VEL_PER_M), rot: normRot(Math.atan2(dy, dx)/DEG)};
 }
 const ballR = () => Math.max(BALL_R*s, ball.px);
-// The felt turns with the arrow: the seam pattern is spun about the view axis by the arrow's own rotation,
-// so the ball is never showing the same face twice — swing the arrow and its face turns with it, at 1:1.
-// ball.quat stays the ball's rest orientation (the arrow edits nothing else), and because the light is fixed
-// in the same frame, only the pattern turns while the highlight stays where the light puts it.
-function drawBall(){
-  if (!ball.on) return;
-  const c = toPx(ball);
-  drawTennisBall(ctx, c.x, c.y, ballR(), {quat: ball.quat, spin: ball.rot});
-}
 
 // ---- the ball's arrow. It always starts at the ball's centre, but the first stretch is never drawn:
 //      a gap radius (always wider than the ball) swallows the tail, so the felt stays clean and the
@@ -1036,9 +1397,9 @@ function edgeReach(x, y, ux, uy){
 // That dashed run is also the aiming handle: it is long, so grabbing it far from the ball gives a long
 // lever arm (see rotateArrow).
 // The flight itself, drawn first among the ball-mode elements (see draw): the marks and the players are
-// laid on top of it, never the other way round.
+// laid on top of it, never the other way round. draw() is what decides whether there is a ball mode at
+// all, so this needs no guard of its own.
 function drawBallFlight(){
-  if (!ball.on) return;
   const g = arrowGeom(), col = arrowColor();
   // The dashed run is the flight itself, drawn whole: it never stops at a player's reach, because the
   // trajectory is what the arrow means and a line that ends mid-court reads as the arrow being cut
@@ -1078,9 +1439,11 @@ function drawBallFlight(){
 }
 
 // The arrow itself — shaft, filled head and the speed readout — drawn in pixels above everything else
-// the ball mode puts on the court. It is the aim handle, not part of the model, so it stays on top even
-// though the flight it describes is drawn underneath the marks and the players (see draw).
-function drawBallArrow(){
+// the ball mode puts on the court, and then the ball on top of it. They are one function because they
+// are one thing: the arrow is this ball's shot, its length and its readout are this ball's speed, so an
+// arrow without its ball would be a nonsense. draw() therefore does not call this at all unless there
+// is a ball on court (see draw), and there is no way to reach the arrow alone.
+function drawBallMode(){
   const g = arrowGeom(), col = arrowColor();
   const bx = g.tip.x - g.ux*g.head, by = g.tip.y - g.uy*g.head;   // centre of the head's base
   const nx = -g.uy, ny = g.ux;                                    // across the shaft
@@ -1108,6 +1471,14 @@ function drawBallArrow(){
   const label = Math.round(ball.vel) + ' km/h';
   ctx.fillText(label, 6, -(g.hw + 9));               // across the shaft, on the arrow's left flank
   ctx.restore();
+
+  // the ball last, so it covers the arrow's tail rather than the other way round. The felt turns with
+  // the arrow: the seam pattern is spun about the view axis by the arrow's own rotation, so swinging the
+  // arrow turns its face at 1:1 — the ball is never showing the same face twice. ball.quat stays the
+  // ball's rest orientation (the arrow edits nothing else), and because the light is fixed in the same
+  // frame, only the pattern turns while the highlight stays where the light puts it.
+  const c = toPx(ball);
+  drawTennisBall(ctx, c.x, c.y, ballR(), {quat: ball.quat, spin: ball.rot});
 }
 
 // drag the ARROW: it only changes the ball's speed — the direction belongs to the dashed extension
@@ -1503,15 +1874,16 @@ function draw(){
   ctx.clearRect(0,0,cw,ch);
   ctx.translate(ox,oy); ctx.scale(s,s);
   drawCourt(); drawBeams(); drawNet();
-  // The flight before everything it carries: the BTL and its solid HWS are the backdrop of the ball mode,
-  // so the BCRP-E/SRCP dots, the reach lines and the players are all laid on top of the trajectory and
-  // never under it. It is drawn in the same pixels as the arrow (see drawBallFlight).
+  // Ball mode, in two passes and both of them gated on ball.on: the flight first, as the backdrop of
+  // everything it carries (the BTL and its solid HWS sit under the dots, the reach lines and the
+  // players), then — on top of them all — the ball with its arrow (see drawBallMode). No ball, no
+  // ball-mode drawing at all.
   ctx.setTransform(dpr,0,0,dpr,0,0);
-  drawBallFlight();
-  ctx.translate(ox,oy); ctx.scale(s,s);                 // back to court metres for the marks and players
+  if (ball.on) drawBallFlight();
+  ctx.setTransform(dpr,0,0,dpr,0,0); ctx.translate(ox,oy); ctx.scale(s,s);   // metres: marks, players
   drawPlayers(); drawDragGuide();
-  ctx.setTransform(dpr,0,0,dpr,0,0);   // back to pixels: the ball keeps a readable size and sits on top
-  drawBallArrow(); drawBall();
+  ctx.setTransform(dpr,0,0,dpr,0,0);   // pixels again: the ball keeps a readable size and sits on top
+  if (ball.on) drawBallMode();
 }
 
 // ---- interaction (mouse + touch via pointer events)
@@ -1680,6 +2052,7 @@ function syncReachUI(){
     el.oninput = () => {                            // oninput (not addEventListener) keeps one handler
       sl.set((+el.value) * sl.scale);
       out.textContent = sl.fmt(+el.value);
+      scheduleHash();                               // "dvr:" and friends travel with the link
       draw();
     };
   }
@@ -1700,7 +2073,7 @@ ballOn.addEventListener('change', () => {
 // the drag itself, the URL and the scene are untouched — so a change just redraws.
 const deltaOnEl = document.getElementById('deltaOn');
 deltaOnEl.checked = deltaOn;                 // the box starts from the setting, never the other way round
-deltaOnEl.addEventListener('change', () => { deltaOn = deltaOnEl.checked; draw(); });
+deltaOnEl.addEventListener('change', () => { deltaOn = deltaOnEl.checked; writeHash(); draw(); });
 // ---- ball size slider: writes ball.px, the ball's drawn radius in CSS px (BALL_PX is its default).
 // Its initial position follows ball.px, so editing the constant in the code is enough. Touching the
 // slider also shows the ball, so the size change is visible straight away.
@@ -1710,7 +2083,8 @@ ballSizev.textContent = ball.px + ' px';
 ballSize.addEventListener('input', () => {
   ball.px = +ballSize.value;
   ballSizev.textContent = ball.px + ' px';
-  if (!ball.on){ ball.on = true; ballOn.checked = true; writeHash(); status(); }
+  if (!ball.on){ ball.on = true; ballOn.checked = true; status(); }
+  scheduleHash();                 // "bs:" travels with the link, and the game remembers it
   draw();
 });
 // ---- arrow width slider: writes arrowW, the shaft width in CSS px (BALL_ARROW_W is its default).
@@ -1721,7 +2095,8 @@ arrowWidthv.textContent = arrowW + ' px';
 arrowWidth.addEventListener('input', () => {
   arrowW = +arrowWidth.value;
   arrowWidthv.textContent = arrowW + ' px';
-  if (!ball.on){ ball.on = true; ballOn.checked = true; writeHash(); status(); }
+  if (!ball.on){ ball.on = true; ballOn.checked = true; status(); }
+  scheduleHash();                 // "aw:" travels with the link as well
   draw();
 });
 // a #p- link can show or hide the ball, so the header always mirrors the live ball state
@@ -1730,17 +2105,68 @@ function syncBallUI(){
   ballSize.value = ball.px; ballSizev.textContent = ball.px + ' px';
   arrowWidth.value = arrowW; arrowWidthv.textContent = arrowW + ' px';
 }
-// ---- header: on narrow screens it is just a "Settings" bar (see the max-width media query);
-// tapping it toggles the full panel. Wide screens always show the panel and hide the bar.
-const bar = document.querySelector('header'), barToggle = document.getElementById('barToggle');
-function setBarOpen(open){
-  bar.dataset.open = open ? 'true' : 'false';
-  barToggle.setAttribute('aria-expanded', String(open));
+// every control mirrors the live settings at once: a link or a stored game can change the reach
+// numbers, the ball and the delta marker together, so they are re-read together
+function syncSettingsUI(){
+  syncReachUI();
+  syncBallUI();
+  deltaOnEl.checked = deltaOn;
 }
-barToggle.addEventListener('click', () => setBarOpen(bar.dataset.open !== 'true'));
-setBarOpen(false);      // start minimal; the court gets the whole screen until the bar is tapped
-applyHash();    // a shared #p- link restores the players before the first draw
-status();       // ...and the status line reflects whether that link also shows the ball
+// ---- tabs: one header, three panes. Game holds the scene's line of help, My Games the saved list,
+// Settings the controls. On narrow screens the pane stacks under the tabs from the top down; on wide
+// screens a pane becomes a column down the left (see the media query) and the court takes the rest.
+const bar = document.querySelector('header');
+const TABS = ['game', 'games', 'settings'];
+const tabBtn = t => document.getElementById('tabbtn-' + t);
+function setTab(name, focus){
+  const tab = TABS.includes(name) ? name : 'game';
+  bar.dataset.tab = tab;
+  for (const t of TABS){
+    const on = t === tab, btn = tabBtn(t);
+    btn.setAttribute('aria-selected', String(on));
+    btn.tabIndex = on ? 0 : -1;          // one tab in the Tab order, as a tablist wants
+    document.getElementById('tab-' + t).hidden = !on;
+    if (on && focus) btn.focus();
+  }
+  resize();          // the court's rectangle depends on where the header now ends (see resize)
+}
+TABS.forEach((t, i) => {
+  tabBtn(t).addEventListener('click', () => setTab(t));
+  tabBtn(t).addEventListener('keydown', e => {
+    const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+    if (!step) return;
+    e.preventDefault();
+    setTab(TABS[(i + step + TABS.length) % TABS.length], true);   // the arrows wrap around
+  });
+});
+// The Game tab's head: the name of the game on court, and its help line behind a triangle. renderGames
+// keeps the name current, so opening, creating, renaming and deleting a game all retitle the tab.
+const gameNameEl = document.getElementById('gameName');
+const helpBtn = document.getElementById('helpBtn'), statusEl = document.getElementById('status');
+function syncGameName(){
+  const g = activeGame();
+  gameNameEl.textContent = g ? g.name : '';
+  gameNameEl.title = g ? g.name : '';
+}
+function setHelp(open){
+  helpBtn.setAttribute('aria-expanded', String(open));
+  helpBtn.title = open ? 'Hide help' : 'Show help';
+  statusEl.hidden = !open;
+  resize();                       // the pane changed height, so the court's offset may have changed too
+}
+helpBtn.addEventListener('click', () => setHelp(helpBtn.getAttribute('aria-expanded') !== 'true'));
+
+// ---- boot: the saved games first (the active one becomes the court and its settings), then a shared
+// link, which wins over the stored court and is written straight into the active game.
+initGames();
+const link = fragmentText();
+if (link){
+  const courtHit = applyCourt(link);
+  const setHit = applySettingsText(settingsOf(link));       // "#s-..." settings, if the link has them
+  if (courtHit || setHit) writeHash();                      // the link is now the active game's state
+}
+setTab('game');     // Game is the tab the app opens on
+status();           // the status line reflects whether the ball is shown
 resize();
 </script>
 </body>
