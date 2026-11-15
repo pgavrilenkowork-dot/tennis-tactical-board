@@ -324,6 +324,23 @@ function applyCourt(text){
 // the whole fragment: the court, then the settings. One link therefore carries the scene AND the
 // controls, and a saved game stores exactly the same two pieces of text.
 function fullHash(){ return hashOf() + ';' + settingsFragment(); }
+
+// ---- is the link the game that is already on court?
+// The digest of one state string, SHA-256 from the browser's own SubtleCrypto. A plain-http origin is not
+// a secure context and has no crypto.subtle; there, and if a digest is ever refused, the two strings are
+// compared as they are — the same comparison on the same text, since both sides come out of fullHash().
+function digest(text){
+  const sub = globalThis.crypto && globalThis.crypto.subtle;
+  if (!sub) return Promise.resolve(text);
+  return sub.digest('SHA-256', new TextEncoder().encode(text))
+    .then(buf => Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join(''),
+          () => text);
+}
+// two states compared by digest: "is this the same scene?" is then one comparison of hex strings
+const sameDigest = (a, b) => Promise.all([digest(a), digest(b)]).then(([x, y]) => x === y);
+// The digests are taken of the game's own hash — what the court says — laid side by side around the
+// link: one before the link is applied and one after, so equal digests are the answer to "is this game
+// already that scene?". A paste that only shuffles or pads entries changes nothing and compares equal.
 // replaceState keeps the back button clean; file:// may refuse it, so fall back to the fragment itself.
 // Every write also refreshes the active game's record — a drag, a tap or a slider is a save.
 function writeHash(){
@@ -340,19 +357,37 @@ function scheduleHash(){
   if (hashTimer) return;
   hashTimer = setTimeout(() => { hashTimer = 0; writeHash(); }, 60);
 }
-// a fragment that is pasted or edited re-places the players and re-lights the emitting ends; our
-// own writes are exactly the canonical form of the live state, so they are recognised and ignored
+// A fragment pasted into an open tab is a link like any other, and a link is a scene of its own: it never
+// takes over the game on court. It is laid on the court, the game's own hash is read back, and the two are
+// compared by digest — equal means the link says nothing this game does not already say, so the page does
+// what a reload would do and only the URL is re-spelled canonically. Different means the link is a scene of
+// its own: it gets a game of its own and takes the court, while the game that was active keeps its record
+// and its court. A first visit is the one exception — boot has just made its game and there is no saved
+// work to protect, so `fresh` lets the link land in that game.
+async function openLink(link, fresh){
+  const live = fullHash();                    // the current game, as a reload of it would restore it
+  const courtHit = applyCourt(link);
+  const setHit = applySettingsText(settingsOf(link));
+  if (!courtHit && !setHit) return false;     // nothing of ours in the fragment: the court is left alone
+  const merged = fullHash();                  // ...and the state the link asks for on this court
+  if (await sameDigest(live, merged)){ writeHash(); return false; }   // the same scene: nothing happened
+  if (!fresh){
+    // the game that was on court is the user's and keeps its record; the link gets a game of its own,
+    // applied a second time because createGame() has just put the default scene under it.
+    createGame(); applyCourt(link); applySettingsText(settingsOf(link));
+  }
+  writeHash();                                // the link is that game's state now, and the link says so
+  status(); draw();
+  return true;
+}
+// Our own writes arrive here as well where replaceState is refused (the file:// fallback), and then the
+// fragment is exactly the live state, which is what that early return recognises.
 window.addEventListener('hashchange', () => {
   if (drag) return;          // mid-drag the pointer owns the position and our own writes are stale
   const raw = fragmentText();
-  const pos = parseCourt(raw);
-  const court = pos.length > 0 && canonical(pos) !== hashOf();
-  const settings = settingsOf(raw) !== settingsText();
-  if (!court && !settings) return;
-  if (court) applyCourt(raw);
-  if (settings) applySettingsText(settingsOf(raw));
-  markDirty();               // what the link brought in is the active game's now
-  status(); draw();
+  if (raw === fullHash()) return;
+  markDirty();               // the record catches up with the court before anything is compared to it
+  openLink(raw, false);
 });
 
 // ---- settings in the fragment
@@ -627,12 +662,13 @@ document.getElementById('newGame').addEventListener('click', () => {
   writeHash();               // the new game's default court goes into the link at once
   status(); draw();
 });
-// the stored list, or the very first game on a first visit — resetPlayers() has already put the
-// default scene on the court, so Game 1 simply records it
+// the stored list (true), or the very first game on a first visit (false) — resetPlayers() has already
+// put the default scene on the court, so Game 1 simply records it
 function initGames(){
-  if (loadStore()){ restoreGame(activeGame()); renderGames(); return; }
+  if (loadStore()){ restoreGame(activeGame()); renderGames(); return true; }
   games = []; activeId = null;
   createGame();
+  return false;
 }
 
 // ---- defender reach
@@ -2157,14 +2193,12 @@ function setHelp(open){
 helpBtn.addEventListener('click', () => setHelp(helpBtn.getAttribute('aria-expanded') !== 'true'));
 
 // ---- boot: the saved games first (the active one becomes the court and its settings), then a shared
-// link, which wins over the stored court and is written straight into the active game.
-initGames();
+// link, which openLink() treats exactly as a link pasted later in the tab: a scene of its own, never an
+// order to overwrite what is saved. The only difference is the first visit, where there is nothing to
+// protect and the game boot has just made is the one the link lands in.
+const hadStore = initGames();
 const link = fragmentText();
-if (link){
-  const courtHit = applyCourt(link);
-  const setHit = applySettingsText(settingsOf(link));       // "#s-..." settings, if the link has them
-  if (courtHit || setHit) writeHash();                      // the link is now the active game's state
-}
+if (link) openLink(link, !hadStore);
 setTab('game');     // Game is the tab the app opens on
 status();           // the status line reflects whether the ball is shown
 resize();
