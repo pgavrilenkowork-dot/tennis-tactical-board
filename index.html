@@ -341,21 +341,18 @@ const sameDigest = (a, b) => Promise.all([digest(a), digest(b)]).then(([x, y]) =
 // The digests are taken of the game's own hash — what the court says — laid side by side around the
 // link: one before the link is applied and one after, so equal digests are the answer to "is this game
 // already that scene?". A paste that only shuffles or pads entries changes nothing and compares equal.
-// replaceState keeps the back button clean; file:// may refuse it, so fall back to the fragment itself.
-// Every write also refreshes the active game's record — a drag, a tap or a slider is a save.
+// replaceState keeps the back button clean, but file:// refuses it once the fragment changes, and the
+// fallback then spells that fragment as a real navigation — one row in Chrome's History each time. So
+// the URL is written once per *finished* action and never during the gesture: a drag that rewrote it
+// every 60 ms put ~97k URLs and 175k visits into History in two days, and the clustering scan over that
+// history then held a core at 100% on every launch. Nothing needs the URL for that: markDirty() keeps
+// the live record in step while the pointer moves, and pagehide gives it the last word.
 function writeHash(){
   markDirty();
   const h = fullHash();
   if (location.hash.replace(/^#/, '') === h) return;
   try { history.replaceState(null, '', '#' + h); }
   catch (e){ location.replace('#' + h); }
-}
-// one URL write per ~60 ms at most, however fast the pointer moves. A timer, not a frame: sliders are
-// often moved in a window that is not being painted, and a queued frame would never be drawn there.
-let hashTimer = 0;
-function scheduleHash(){
-  if (hashTimer) return;
-  hashTimer = setTimeout(() => { hashTimer = 0; writeHash(); }, 60);
 }
 // A fragment pasted into an open tab is a link like any other, and a link is a scene of its own: it never
 // takes over the game on court. It is laid on the court, the game's own hash is read back, and the two are
@@ -469,7 +466,8 @@ function saveSoon(){
   saveTimer = setTimeout(saveStore, 150);
 }
 window.addEventListener('pagehide', saveStore);
-// the active game's text follows the live court and settings; every writeHash() lands here
+// the active game's text follows the live court and settings; writeHash() — and every gesture in
+// progress, through markDirty() — lands here
 function markDirty(){
   const g = activeGame();
   if (!g) return;
@@ -2021,7 +2019,7 @@ cv.addEventListener('pointermove', e => {
     drag.p.x = x; drag.p.y = y;    // the arrow is stored relative to the ball, so it rides along
   }
   draw();
-  scheduleHash();                 // keep the URL in step while the player is being moved
+  markDirty();                    // the record follows the pointer; the URL waits for the drop in end()
 });
 function end(){
   if (!drag) return;
@@ -2088,9 +2086,10 @@ function syncReachUI(){
     el.oninput = () => {                            // oninput (not addEventListener) keeps one handler
       sl.set((+el.value) * sl.scale);
       out.textContent = sl.fmt(+el.value);
-      scheduleHash();                               // "dvr:" and friends travel with the link
+      markDirty();                                  // the record follows the knob while it is dragged
       draw();
     };
+    el.onchange = writeHash;    // "dvr:" and friends travel with the link — once, when the knob is let go
   }
 }
 syncReachUI();
@@ -2120,9 +2119,10 @@ ballSize.addEventListener('input', () => {
   ball.px = +ballSize.value;
   ballSizev.textContent = ball.px + ' px';
   if (!ball.on){ ball.on = true; ballOn.checked = true; status(); }
-  scheduleHash();                 // "bs:" travels with the link, and the game remembers it
+  markDirty();                    // the game remembers the size at once; the URL waits for the release
   draw();
 });
+ballSize.addEventListener('change', () => writeHash());   // "bs:" goes into the link when let go
 // ---- arrow width slider: writes arrowW, the shaft width in CSS px (BALL_ARROW_W is its default).
 // Same rules as the size slider: it starts from the constant and shows the ball so you can see it.
 const arrowWidth = document.getElementById('arrowW'), arrowWidthv = document.getElementById('arrowWv');
@@ -2132,9 +2132,10 @@ arrowWidth.addEventListener('input', () => {
   arrowW = +arrowWidth.value;
   arrowWidthv.textContent = arrowW + ' px';
   if (!ball.on){ ball.on = true; ballOn.checked = true; status(); }
-  scheduleHash();                 // "aw:" travels with the link as well
+  markDirty();                    // the game remembers the width at once; the URL waits for the release
   draw();
 });
+arrowWidth.addEventListener('change', () => writeHash());  // "aw:" goes into the link when let go
 // a #p- link can show or hide the ball, so the header always mirrors the live ball state
 function syncBallUI(){
   ballOn.checked = ball.on;
